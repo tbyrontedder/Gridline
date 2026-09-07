@@ -1,0 +1,1859 @@
+"use strict";
+(() => {
+const __modules = Object.create(null);
+
+// ===== engine.js =====
+__modules["engine"] = (() => {
+/** Gridline calculation and document core. No DOM, network calls, eval, or dependencies. */
+const MAX_ROWS = 1048576;
+const MAX_COLS = 16384;
+const MAX_RANGE_CELLS = 200000;
+const clone = value => value === undefined ? undefined : structuredClone(value);
+const keyOf = (r, c) => `${r},${c}`;
+function colName(c) {
+  let s = ''; for (c++; c > 0; c = Math.floor((c - 1) / 26)) s = String.fromCharCode(65 + (c - 1) % 26) + s;
+  return s;
+}
+function address(r, c) { return `${colName(c)}${r + 1}`; }
+function parseAddress(s) {
+  const m = /^\$?([A-Za-z]{1,3})\$?([1-9]\d*)$/.exec(s);
+  if (!m) return null;
+  let c = 0; for (const x of m[1].toUpperCase()) c = c * 26 + x.charCodeAt(0) - 64;
+  const r = Number(m[2]) - 1;
+  return r < MAX_ROWS && c <= MAX_COLS ? { r, c: c - 1 } : null;
+}
+function normalizedRange(a, b = a) {
+  return { r1: Math.min(a.r, b.r), c1: Math.min(a.c, b.c), r2: Math.max(a.r, b.r), c2: Math.max(a.c, b.c) };
+}
+function parseRange(s) {
+  const [a, b = a] = s.trim().split(':'); const x = parseAddress(a), y = parseAddress(b);
+  return x && y ? normalizedRange(x, y) : null;
+}
+function rangeAddress(q) { return q.r1 === q.r2 && q.c1 === q.c2 ? address(q.r1, q.c1) : `${address(q.r1, q.c1)}:${address(q.r2, q.c2)}`; }
+function* cellsIn(q, limit = MAX_RANGE_CELLS) {
+  if ((q.r2 - q.r1 + 1) * (q.c2 - q.c1 + 1) > limit) throw new Error(`Selection exceeds the ${limit.toLocaleString()}-cell operation limit.`);
+  for (let r = q.r1; r <= q.r2; r++) for (let c = q.c1; c <= q.c2; c++) yield { r, c };
+}
+class FormulaError extends Error {
+  constructor(code, detail = '') { super(detail || code); this.code = code; this.name = 'FormulaError'; }
+  toString() { return this.code; }
+}
+const fail = (code, detail) => { throw new FormulaError(code, detail); };
+const checkError = x => { if (x instanceof FormulaError) throw x; return x; };
+class RangeValue {
+  constructor(rows, reference = null) { this.rows = rows; this.reference = reference; }
+  flat() { return this.rows.flat(); }
+}
+const scalar = x => checkError(x instanceof RangeValue ? x.rows[0]?.[0] ?? null : x);
+const number = v => {
+  v = scalar(v);
+  if (v === null || v === '' || v === undefined) return 0;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : fail('#NUM!');
+  if (typeof v === 'boolean') return +v;
+  const n = Number(v); return Number.isFinite(n) ? n : fail('#VALUE!');
+};
+const str = v => { v = scalar(v); return v == null ? '' : typeof v === 'boolean' ? (v ? 'TRUE' : 'FALSE') : String(v); };
+const logical = v => { v = scalar(v); if (typeof v === 'string' && !/^(true|false)$/i.test(v)) fail('#VALUE!'); return typeof v === 'string' ? /^true$/i.test(v) : !!v; };
+const flatten = args => args.flatMap(x => x instanceof RangeValue ? x.flat() : [x]);
+const numeric = args => {
+  const out = [];
+  for (const arg of args) {
+    if (arg instanceof RangeValue) { for (const x of arg.flat()) { checkError(x); if (typeof x === 'number') out.push(x); } }
+    else if (arg != null && arg !== '') out.push(number(arg));
+  }
+  return out;
+};
+const sum = xs => xs.reduce((a, b) => a + b, 0);
+const safeResult = v => typeof v === 'number' && !Number.isFinite(v) ? fail('#NUM!') : v;
+const errorRegex = /^#(?:REF!|DIV\/0!|VALUE!|NAME\?|N\/A|NUM!|NULL!|CYCLE!|SPILL!|ERROR!)/i;
+const cellPattern = /^\$?([A-Z]{1,3})(\$?)([1-9]\d*)$/i;
+function tokenizeFormula(source) {
+  const tokens = []; let i = source.startsWith('=') ? 1 : 0;
+  while (i < source.length) {
+    const start = i, ch = source[i];
+    if (/\s/.test(ch)) { i++; continue; }
+    if (ch === '"' || ch === "'") {
+      const quote = ch; let s = ''; i++;
+      let closed = false;
+      while (i < source.length) {
+        if (source[i] === quote) { if (source[i + 1] === quote) { s += quote; i += 2; } else { i++; closed = true; break; } }
+        else s += source[i++];
+      }
+      if (!closed) fail('#ERROR!', 'Unterminated quoted text.');
+      tokens.push({ type: quote === '"' ? 'string' : 'sheet', value: s, start, end: i }); continue;
+    }
+    const rest = source.slice(i);
+    let m;
+    if ((m = errorRegex.exec(rest))) { i += m[0].length; tokens.push({ type: 'error', value: m[0].toUpperCase(), start, end: i }); continue; }
+    if ((m = /^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/.exec(rest))) { i += m[0].length; tokens.push({ type: 'number', value: Number(m[0]), start, end: i }); continue; }
+    if ((m = /^\$?[A-Za-z_][A-Za-z0-9_.$]*/.exec(rest))) { i += m[0].length; tokens.push({ type: 'id', value: m[0], start, end: i }); continue; }
+    if ((m = /^(<=|>=|<>|[+\-*/^&%=<>,;():!])/.exec(rest))) { i += m[0].length; tokens.push({ type: 'op', value: m[0] === ';' ? ',' : m[0], start, end: i }); continue; }
+    fail('#ERROR!', `Unexpected character at ${i + 1}: ${ch}`);
+  }
+  tokens.push({ type: 'eof', value: '', start: i, end: i }); return tokens;
+}
+const precedence = { '=': 10, '<>': 10, '<': 10, '>': 10, '<=': 10, '>=': 10, '&': 20, '+': 30, '-': 30, '*': 40, '/': 40, '^': 50 };
+class FormulaParser {
+  constructor(source) { this.tokens = tokenizeFormula(source); this.i = 0; this.depth = 0; }
+  peek(value) { return value === undefined ? this.tokens[this.i] : this.tokens[this.i].value === value; }
+  take() { return this.tokens[this.i++]; }
+  expect(value) { if (!this.peek(value)) fail('#ERROR!', `Expected ${value}.`); this.take(); }
+  parse() { const node = this.expression(0); if (this.peek().type !== 'eof') fail('#ERROR!', 'Unexpected trailing expression.'); return node; }
+  expression(min) {
+    if (++this.depth > 128) fail('#NUM!', 'Formula nesting limit exceeded.');
+    let left = this.atom();
+    while (true) {
+      if (this.peek('%')) { this.take(); left = { type: 'unary', op: '%', node: left }; continue; }
+      const op = this.peek().value, p = precedence[op]; if (p === undefined || p < min) break;
+      this.take(); const right = this.expression(p + 1); left = { type: 'binary', op, left, right };
+    }
+    this.depth--; return left;
+  }
+  atom() {
+    const t = this.take();
+    if (t.type === 'number' || t.type === 'string') return { type: 'literal', value: t.value };
+    if (t.type === 'error') return { type: 'error', value: t.value };
+    if (t.value === '+' || t.value === '-') return { type: 'unary', op: t.value, node: this.expression(55) };
+    if (t.value === '(') { const n = this.expression(0); this.expect(')'); return n; }
+    if (t.type !== 'id' && t.type !== 'sheet') fail('#ERROR!', 'Expected a value, reference, or function.');
+    if (this.peek('(')) {
+      this.take(); const args = [];
+      if (!this.peek(')')) while (true) {
+        args.push(this.peek(',') || this.peek(')') ? { type: 'literal', value: null } : this.expression(0));
+        if (!this.peek(',')) break; this.take();
+      }
+      this.expect(')'); return { type: 'call', name: t.value.toUpperCase(), args };
+    }
+    let sheet = null, value = t.value;
+    if (this.peek('!')) { sheet = value; this.take(); const ref = this.take(); if (ref.type === 'error') return { type: 'error', value: ref.value }; value = ref.value; }
+    if (this.peek(':')) {
+      this.take(); const end = this.take().value;
+      let a = parseAddress(value), b = parseAddress(end), whole = false;
+      if (!a && !b && /^\$?[A-Z]{1,3}$/i.test(value) && /^\$?[A-Z]{1,3}$/i.test(end)) {
+        a = parseAddress(value.replace('$', '') + '1'); b = parseAddress(end.replace('$', '') + MAX_ROWS); whole = true;
+      }
+      if (!a || !b) fail('#REF!'); return { type: 'range', sheet, ...normalizedRange(a, b), whole };
+    }
+    const ref = parseAddress(value);
+    if (ref) return { type: 'ref', sheet, ...ref };
+    if (/^TRUE$/i.test(value)) return { type: 'literal', value: true };
+    if (/^FALSE$/i.test(value)) return { type: 'literal', value: false };
+    return { type: 'name', value, sheet };
+  }
+}
+function referenceTokens(source) {
+  let tokens; try { tokens = tokenizeFormula(source); } catch { return []; }
+  const result = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]; if (t.type !== 'id' || !cellPattern.test(t.value) || tokens[i + 1]?.value === '!' || tokens[i + 1]?.value === '(') continue;
+    let sheet = tokens[i - 1]?.value === '!' ? tokens[i - 2]?.value : null;
+    if (tokens[i - 1]?.value === ':') sheet = result.at(-1)?.sheet ?? null;
+    result.push({ ...t, sheet, index: i, pair: tokens[i - 1]?.value === ':' });
+  }
+  return result;
+}
+function replaceSpans(source, edits) { for (const e of edits.sort((a, b) => b.start - a.start)) source = source.slice(0, e.start) + e.text + source.slice(e.end); return source; }
+function shiftFormula(source, dr, dc) {
+  if (!source.startsWith('=')) return source;
+  return replaceSpans(source, referenceTokens(source).map(t => {
+    const a = parseAddress(t.value); if (!a) return { ...t, text: '#REF!' };
+    const r = a.r + (/\$\d/.test(t.value) ? 0 : dr), c = a.c + (t.value[0] === '$' ? 0 : dc);
+    const text = r < 0 || c < 0 || r >= MAX_ROWS || c >= MAX_COLS ? '#REF!' : `${t.value[0] === '$' ? '$' : ''}${colName(c)}${/\$\d/.test(t.value) ? '$' : ''}${r + 1}`;
+    return { ...t, text };
+  }));
+}
+function rewriteStructure(source, formulaSheet, targetSheet, axis, at, delta) {
+  if (!source.startsWith('=')) return source;
+  const refs = referenceTokens(source), edits = [];
+  const format = (t, p) => `${t.value.startsWith('$') ? '$' : ''}${colName(p.c)}${/\$\d/.test(t.value) ? '$' : ''}${p.r + 1}`;
+  for (let i = 0; i < refs.length; i++) {
+    const t = refs[i]; if ((t.sheet ?? formulaSheet).toLowerCase() !== targetSheet.toLowerCase()) continue;
+    const a = parseAddress(t.value); if (!a) continue;
+    const coord = axis === 'row' ? 'r' : 'c';
+    if (refs[i + 1]?.pair) {
+      const end = refs[++i], b = parseAddress(end.value); if (!b) continue;
+      const low = Math.min(a[coord], b[coord]), high = Math.max(a[coord], b[coord]);
+      if (delta < 0 && low === high && low === at) { edits.push({ start: t.start, end: end.end, text: '#REF!' }); continue; }
+      if (delta > 0) { if (a[coord] >= at) a[coord]++; if (b[coord] >= at) b[coord]++; }
+      else {
+        const reversed = a[coord] > b[coord];
+        let lo = low > at ? low - 1 : low, hi = high >= at ? high - 1 : high;
+        a[coord] = reversed ? hi : lo; b[coord] = reversed ? lo : hi;
+      }
+      edits.push({ ...t, text: format(t, a) }, { ...end, text: format(end, b) }); continue;
+    }
+    if (delta < 0 && a[coord] === at) { edits.push({ ...t, text: '#REF!' }); continue; }
+    if (a[coord] >= at) a[coord] += delta;
+    edits.push({ ...t, text: a.r >= MAX_ROWS || a.c >= MAX_COLS ? '#REF!' : format(t, a) });
+  }
+  return replaceSpans(source, edits);
+}
+function compare(a, b) {
+  a = scalar(a); b = scalar(b);
+  if (a == null) a = typeof b === 'string' ? '' : 0;
+  if (b == null) b = typeof a === 'string' ? '' : 0;
+  if (typeof a === 'string' && typeof b === 'string') return a.toLowerCase().localeCompare(b.toLowerCase());
+  if (typeof a !== typeof b) return (typeof a === 'number' ? 0 : typeof a === 'string' ? 1 : 2) - (typeof b === 'number' ? 0 : typeof b === 'string' ? 1 : 2);
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+function criteriaPredicate(crit) {
+  crit = scalar(crit);
+  if (typeof crit !== 'string') return v => compare(v, crit) === 0;
+  const m = /^(<=|>=|<>|=|<|>)(.*)$/.exec(crit), op = m?.[1] ?? '=', text = m?.[2] ?? crit;
+  const target = text !== '' && Number.isFinite(Number(text)) ? Number(text) : text;
+  if (typeof target === 'string' && /[*?~]/.test(target) && (op === '=' || op === '<>')) {
+    let pattern = '';
+    for (let i = 0; i < target.length; i++) {
+      let ch = target[i];
+      if (ch === '~' && i + 1 < target.length) { ch = target[++i]; pattern += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+      else pattern += ch === '*' ? '.*' : ch === '?' ? '.' : ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+    const re = new RegExp(`^${pattern}$`, 'i'); return v => re.test(str(v)) === (op === '=');
+  }
+  return v => { const c = compare(v, target); return { '=': c === 0, '<>': c !== 0, '<': c < 0, '>': c > 0, '<=': c <= 0, '>=': c >= 0 }[op]; };
+}
+const DAY = 86400000;
+const EPOCH = Date.UTC(1899, 11, 31);
+function dateSerial(date) { const days = Math.floor((date.getTime() - EPOCH) / DAY); return days >= 60 ? days + 1 : days; }
+function serialDate(serial) { return new Date(EPOCH + (serial >= 60 ? serial - 1 : serial) * DAY); }
+const FUNCTIONS = new Map();
+function register(name, min, max, execute, description) { FUNCTIONS.set(name, { min, max, execute, description }); }
+register('SUM', 1, Infinity, a => sum(numeric(a)), 'Adds numbers in a range.');
+register('AVERAGE', 1, Infinity, a => { const v = numeric(a); return v.length ? sum(v) / v.length : fail('#DIV/0!'); }, 'Returns the arithmetic mean.');
+register('MIN', 1, Infinity, a => { const v = numeric(a); return v.length ? v.reduce((a, b) => Math.min(a, b), Infinity) : 0; }, 'Returns the smallest number.');
+register('MAX', 1, Infinity, a => { const v = numeric(a); return v.length ? v.reduce((a, b) => Math.max(a, b), -Infinity) : 0; }, 'Returns the largest number.');
+register('COUNT', 1, Infinity, a => flatten(a).filter(x => typeof x === 'number').length, 'Counts numeric cells.');
+register('COUNTA', 1, Infinity, a => flatten(a).filter(x => x !== null && x !== undefined).length, 'Counts nonempty values.');
+register('COUNTBLANK', 1, 1, a => flatten(a).filter(x => x === null || x === '').length, 'Counts blank cells.');
+register('PRODUCT', 1, Infinity, a => { const v = numeric(a); return v.length ? v.reduce((x, y) => x * y, 1) : 0; }, 'Multiplies numbers.');
+register('MEDIAN', 1, Infinity, a => { const v = numeric(a).sort((x, y) => x - y); const n = v.length; return n ? n % 2 ? v[n >> 1] : (v[n / 2 - 1] + v[n / 2]) / 2 : fail('#NUM!'); }, 'Returns the middle value.');
+register('SUMPRODUCT', 1, Infinity, a => {
+  const arr = a.map(x => x instanceof RangeValue ? x.flat() : [x]); if (arr.some(x => x.length !== arr[0].length)) fail('#VALUE!');
+  return sum(arr[0].map((_, i) => arr.reduce((v, xs) => v * (typeof checkError(xs[i]) === 'number' ? xs[i] : 0), 1)));
+}, 'Sums products of corresponding values.');
+for (const [n, f] of Object.entries({ ABS: Math.abs, SQRT: Math.sqrt, INT: Math.floor, EXP: Math.exp, LN: Math.log, LOG10: Math.log10, SIN: Math.sin, COS: Math.cos, TAN: Math.tan, SIGN: Math.sign })) register(n, 1, 1, a => safeResult(f(number(a[0]))), `${n.toLowerCase()} of a number.`);
+register('PI', 0, 0, () => Math.PI, 'Returns pi.');
+register('POWER', 2, 2, a => safeResult(number(a[0]) ** number(a[1])), 'Raises a number to a power.');
+register('MOD', 2, 2, a => { const x = number(a[0]), y = number(a[1]); return y ? x - y * Math.floor(x / y) : fail('#DIV/0!'); }, 'Returns the remainder.');
+for (const name of ['ROUND', 'ROUNDUP', 'ROUNDDOWN', 'TRUNC']) register(name, name === 'TRUNC' ? 1 : 2, 2, a => {
+  const x = number(a[0]), d = Math.trunc(number(a[1] ?? 0)); if (Math.abs(d) > 308) fail('#NUM!');
+  const factor = 10 ** d, abs = Math.abs(x) * factor;
+  const rounded = name === 'ROUND' ? Math.floor(abs + 0.5 + Number.EPSILON * abs) : name === 'ROUNDUP' ? Math.ceil(abs) : Math.floor(abs);
+  return safeResult(Math.sign(x) * rounded / factor);
+}, 'Rounds a number.');
+for (const name of ['AND', 'OR', 'XOR']) register(name, 1, Infinity, a => {
+  const v = flatten(a).filter(x => typeof x !== 'string' && x !== null).map(logical); if (!v.length) fail('#VALUE!');
+  return name === 'AND' ? v.every(Boolean) : name === 'OR' ? v.some(Boolean) : v.filter(Boolean).length % 2 === 1;
+}, 'Combines logical tests.');
+register('NOT', 1, 1, a => !logical(a[0]), 'Reverses a logical value.');
+for (const [name, test] of Object.entries({ ISNUMBER: x => typeof x === 'number', ISTEXT: x => typeof x === 'string', ISBLANK: x => x === null, ISLOGICAL: x => typeof x === 'boolean' })) register(name, 1, 1, a => test(scalar(a[0])), 'Tests a value’s type.');
+register('N', 1, 1, a => { const x = scalar(a[0]); return typeof x === 'number' ? x : typeof x === 'boolean' ? +x : 0; }, 'Converts a value to a number.');
+register('NA', 0, 0, () => fail('#N/A'), 'Returns the unavailable error.');
+register('LEN', 1, 1, a => str(a[0]).length, 'Counts characters.');
+register('LEFT', 1, 2, a => { const n = number(a[1] ?? 1); return n < 0 ? fail('#VALUE!') : str(a[0]).slice(0, n); }, 'Returns leading characters.');
+register('RIGHT', 1, 2, a => { const n = number(a[1] ?? 1); return n < 0 ? fail('#VALUE!') : n ? str(a[0]).slice(-n) : ''; }, 'Returns trailing characters.');
+register('MID', 3, 3, a => { const s = number(a[1]), n = number(a[2]); return s < 1 || n < 0 ? fail('#VALUE!') : str(a[0]).slice(s - 1, s - 1 + n); }, 'Returns text from a position.');
+register('TRIM', 1, 1, a => str(a[0]).trim().replace(/ +/g, ' '), 'Removes extra spaces.');
+register('UPPER', 1, 1, a => str(a[0]).toUpperCase(), 'Converts text to uppercase.');
+register('LOWER', 1, 1, a => str(a[0]).toLowerCase(), 'Converts text to lowercase.');
+register('PROPER', 1, 1, a => str(a[0]).toLowerCase().replace(/\b\w/g, x => x.toUpperCase()), 'Capitalizes words.');
+register('CONCAT', 1, Infinity, a => flatten(a).map(str).join(''), 'Joins text and ranges.');
+register('CONCATENATE', 1, Infinity, a => a.map(str).join(''), 'Joins text values.');
+register('TEXTJOIN', 3, Infinity, a => flatten(a.slice(2)).filter(x => !logical(a[1]) || (x !== null && x !== '')).map(str).join(str(a[0])), 'Joins text with a delimiter.');
+register('SUBSTITUTE', 3, 4, a => {
+  const s = str(a[0]), old = str(a[1]), next = str(a[2]); if (!old) return s;
+  if (a.length < 4) return s.split(old).join(next);
+  const at = number(a[3]); if (at < 1) fail('#VALUE!'); let n = 0;
+  return s.split(old).reduce((all, p, i) => i ? all + (++n === at ? next : old) + p : p, '');
+}, 'Replaces matching text.');
+for (const name of ['FIND', 'SEARCH']) register(name, 2, 3, a => {
+  let needle = str(a[0]), text = str(a[1]); const start = number(a[2] ?? 1); if (start < 1) fail('#VALUE!');
+  if (name === 'SEARCH') { needle = needle.toLowerCase(); text = text.toLowerCase(); }
+  const i = text.indexOf(needle, start - 1); return i < 0 ? fail('#VALUE!') : i + 1;
+}, 'Finds a text position.');
+register('VALUE', 1, 1, a => number(str(a[0]).replace(/[$,€£]/g, '')), 'Converts numeric text.');
+register('REPT', 2, 2, a => { const n = Math.trunc(number(a[1])); const text = str(a[0]); return n < 0 || n * text.length > 32767 ? fail('#VALUE!') : text.repeat(n); }, 'Repeats text.');
+register('COUNTIF', 2, 2, a => { const p = criteriaPredicate(a[1]); return flatten([a[0]]).filter(p).length; }, 'Counts matching cells.');
+for (const name of ['SUMIF', 'AVERAGEIF']) register(name, 2, 3, a => {
+  const test = flatten([a[0]]), values = flatten([a[2] ?? a[0]]), p = criteriaPredicate(a[1]); if (test.length !== values.length) fail('#VALUE!');
+  const v = values.filter((x, i) => p(test[i]) && typeof checkError(x) === 'number');
+  return name === 'SUMIF' ? sum(v) : v.length ? sum(v) / v.length : fail('#DIV/0!');
+}, 'Aggregates values matching a condition.');
+for (const name of ['SUMIFS', 'COUNTIFS', 'AVERAGEIFS']) register(name, name === 'COUNTIFS' ? 2 : 3, Infinity, a => {
+  const count = name === 'COUNTIFS', first = count ? 0 : 1;
+  if ((a.length - first) % 2 !== 0) fail('#VALUE!');
+  const pairs = []; for (let i = first; i < a.length; i += 2) pairs.push([flatten([a[i]]), criteriaPredicate(a[i + 1])]);
+  const v = count ? pairs[0][0] : flatten([a[0]]); if (pairs.some(p => p[0].length !== v.length)) fail('#VALUE!');
+  const match = v.filter((x, i) => pairs.every(([xs, pred]) => pred(xs[i])));
+  if (count) return match.length;
+  const nums = match.filter(x => typeof checkError(x) === 'number');
+  return name === 'SUMIFS' ? sum(nums) : nums.length ? sum(nums) / nums.length : fail('#DIV/0!');
+}, 'Aggregates with multiple conditions.');
+register('INDEX', 2, 3, a => {
+  const rows = a[0] instanceof RangeValue ? a[0].rows : [[a[0]]], r = number(a[1]) - 1, c = number(a[2] ?? 1) - 1;
+  if (r < 0 || c < 0 || r >= rows.length || c >= rows[0].length) fail('#REF!'); return checkError(rows[r][c]);
+}, 'Returns a value at a row and column.');
+register('MATCH', 2, 3, a => {
+  const values = flatten([a[1]]), mode = number(a[2] ?? 1); let best = -1;
+  for (let i = 0; i < values.length; i++) { const c = compare(values[i], a[0]); if (c === 0) return i + 1; if (mode === 1 && c <= 0 || mode === -1 && c >= 0) best = i; }
+  return best < 0 ? fail('#N/A') : best + 1;
+}, 'Finds the position of a value.');
+register('VLOOKUP', 3, 4, a => {
+  if (!(a[1] instanceof RangeValue)) fail('#VALUE!'); const rows = a[1].rows, col = number(a[2]) - 1, approx = a.length === 3 || logical(a[3]);
+  if (col < 0 || col >= (rows[0]?.length ?? 0)) fail('#REF!'); let found;
+  for (const row of rows) { const c = compare(row[0], a[0]); if (c === 0) return checkError(row[col]); if (approx && c <= 0) found = row[col]; }
+  return found === undefined ? fail('#N/A') : checkError(found);
+}, 'Looks up a value in the first column.');
+register('XLOOKUP', 3, 6, a => {
+  const keys = flatten([a[1]]), vals = flatten([a[2]]); if (keys.length !== vals.length) fail('#VALUE!');
+  const mode = number(a[4] ?? 0), search = number(a[5] ?? 1); if (![0, -1, 1, 2].includes(mode) || ![1, -1].includes(search)) fail('#VALUE!', 'Binary XLOOKUP search modes are not supported.');
+  const indices = keys.map((_, i) => i); if (search === -1) indices.reverse(); let candidate = -1;
+  for (const i of indices) {
+    const cmp = compare(keys[i], a[0]); if (mode === 2 ? criteriaPredicate(a[0])(keys[i]) : cmp === 0) return checkError(vals[i]);
+    if (mode === -1 && cmp < 0 && (candidate < 0 || compare(keys[i], keys[candidate]) > 0) || mode === 1 && cmp > 0 && (candidate < 0 || compare(keys[i], keys[candidate]) < 0)) candidate = i;
+  }
+  return candidate >= 0 ? checkError(vals[candidate]) : a.length >= 4 ? a[3] : fail('#N/A');
+}, 'Looks up an exact or nearest match.');
+register('DATE', 3, 3, a => { let y = number(a[0]); if (y >= 0 && y < 1900) y += 1900; return dateSerial(new Date(Date.UTC(y, number(a[1]) - 1, number(a[2])))); }, 'Creates a spreadsheet date serial.');
+for (const name of ['YEAR', 'MONTH', 'DAY']) register(name, 1, 1, a => { const d = serialDate(number(a[0])); return name === 'YEAR' ? d.getUTCFullYear() : name === 'MONTH' ? d.getUTCMonth() + 1 : d.getUTCDate(); }, 'Extracts a calendar component.');
+register('TODAY', 0, 0, () => dateSerial(new Date()), 'Returns today’s date.');
+register('NOW', 0, 0, () => { const d = new Date(); return dateSerial(d) + (d.getUTCHours() * 3600 + d.getUTCMinutes() * 60 + d.getUTCSeconds()) / 86400; }, 'Returns the current date and UTC time.');
+register('RAND', 0, 0, () => Math.random(), 'Returns a random number between 0 and 1.');
+register('RANDBETWEEN', 2, 2, a => { const lo = Math.ceil(number(a[0])), hi = Math.floor(number(a[1])); return hi < lo ? fail('#NUM!') : Math.floor(Math.random() * (hi - lo + 1)) + lo; }, 'Returns a random integer.');
+register('TEXT', 2, 2, a => formatValue(scalar(a[0]), { format: str(a[1]) }), 'Formats a number as text.');
+register('ROWS', 1, 1, a => a[0] instanceof RangeValue ? a[0].rows.length : 1, 'Counts rows in a range.');
+register('COLUMNS', 1, 1, a => a[0] instanceof RangeValue ? a[0].rows[0]?.length ?? 0 : 1, 'Counts columns in a range.');
+for (const n of ['IF', 'IFERROR', 'IFNA', 'IFS', 'ISERROR', 'ISNA', 'CHOOSE', 'ROW', 'COLUMN']) register(n, 0, Infinity, () => null, 'Evaluated lazily by the calculation engine.');
+
+class CalculationEngine {
+  constructor(workbook) { this.workbook = workbook; this.cache = new Map(); this.astCache = new Map(); this.dependencies = new Map(); this.dependents = new Map(); this.active = new Set(); this.stack = []; this.evaluations = 0; this.rangeDependencies = new Map(); this.volatile = new Set(); }
+  id(sheet, r, c) { return `${sheet.id}!${r},${c}`; }
+  invalidate(ids = null) {
+    if (!ids) { this.cache.clear(); this.dependencies.clear(); this.dependents.clear(); this.active.clear(); this.rangeDependencies.clear(); this.volatile.clear(); return; }
+    const queue = [...ids, ...this.volatile], visited = new Set();
+    // Whole-column ranges are evaluated only to the used row, but must observe future rows too.
+    for (const id of ids) {
+      const bang = id.indexOf('!'), sid = id.slice(0, bang), [r, c] = id.slice(bang + 1).split(',').map(Number);
+      for (const [owner, ranges] of this.rangeDependencies) if (ranges.some(q => q.sid === sid && r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2)) queue.push(owner);
+    }
+    for (let i = 0; i < queue.length; i++) {
+      const id = queue[i]; if (visited.has(id)) continue; visited.add(id); this.cache.delete(id);
+      for (const d of this.dependents.get(id) ?? []) queue.push(d);
+    }
+  }
+  depend(on) {
+    const current = this.stack.at(-1); if (!current) return;
+    if (!this.dependencies.has(current)) this.dependencies.set(current, new Set()); this.dependencies.get(current).add(on);
+    if (!this.dependents.has(on)) this.dependents.set(on, new Set()); this.dependents.get(on).add(current);
+  }
+  get(sheet, r, c) {
+    const id = this.id(sheet, r, c); this.depend(id);
+    if (this.cache.has(id)) return this.cache.get(id);
+    if (this.active.has(id)) return new FormulaError('#CYCLE!', 'Circular reference.');
+    if (this.stack.length > 256) return new FormulaError('#NUM!', 'Calculation depth limit exceeded.');
+    const raw = sheet.cells.get(keyOf(r, c))?.raw ?? '';
+    if (!raw.startsWith('=')) return rawValue(raw);
+    for (const old of this.dependencies.get(id) ?? []) this.dependents.get(old)?.delete(id);
+    this.dependencies.set(id, new Set()); this.rangeDependencies.delete(id); this.volatile.delete(id); if (/\b(TODAY|NOW|RAND|RANDBETWEEN)\s*\(/i.test(raw)) this.volatile.add(id); this.active.add(id); this.stack.push(id); this.evaluations++;
+    let value;
+    try {
+      let ast = this.astCache.get(raw);
+      if (!ast) { ast = new FormulaParser(raw).parse(); if (this.astCache.size > 20000) this.astCache.clear(); this.astCache.set(raw, ast); }
+      value = scalar(this.evaluate(ast, sheet, { r, c })); value = safeResult(value === null ? 0 : value);
+    } catch (error) { value = error instanceof FormulaError ? error : new FormulaError('#ERROR!', error.message); }
+    finally { this.stack.pop(); this.active.delete(id); }
+    this.cache.set(id, value); return value;
+  }
+  resolveSheet(name, current) { const sheet = name ? this.workbook.sheetByName(name) : current; if (!sheet) fail('#REF!', `Unknown sheet: ${name}`); return sheet; }
+  evaluate(n, sheet, here) {
+    if (n.type === 'literal') return n.value;
+    if (n.type === 'error') fail(n.value);
+    if (n.type === 'ref') return checkError(this.get(this.resolveSheet(n.sheet, sheet), n.r, n.c));
+    if (n.type === 'name') {
+      const target = this.workbook.names[n.value.toUpperCase()]; if (!target) fail('#NAME?', `Unknown name: ${n.value}`);
+      return this.evaluate(new FormulaParser('=' + target).parse(), sheet, here);
+    }
+    if (n.type === 'range') {
+      const source = this.resolveSheet(n.sheet, sheet); let last = n.r2;
+      if (n.whole) {
+        last = Math.max(source.usedRange().r2, 0);
+        const owner = this.stack.at(-1); if (owner) { if (!this.rangeDependencies.has(owner)) this.rangeDependencies.set(owner, []); this.rangeDependencies.get(owner).push({ sid: source.id, r1: n.r1, r2: n.r2, c1: n.c1, c2: n.c2 }); }
+      }
+      if ((last - n.r1 + 1) * (n.c2 - n.c1 + 1) > MAX_RANGE_CELLS) fail('#NUM!', 'Range evaluation limit exceeded.');
+      const rows = []; for (let r = n.r1; r <= last; r++) { const row = []; for (let c = n.c1; c <= n.c2; c++) row.push(this.get(source, r, c)); rows.push(row); }
+      return new RangeValue(rows, { sheet: source, ...n });
+    }
+    if (n.type === 'unary') { const x = number(this.evaluate(n.node, sheet, here)); return n.op === '-' ? -x : n.op === '%' ? x / 100 : x; }
+    if (n.type === 'binary') {
+      const a = scalar(this.evaluate(n.left, sheet, here)), b = scalar(this.evaluate(n.right, sheet, here));
+      if (['=', '<>', '<', '>', '<=', '>='].includes(n.op)) { const c = compare(a, b); return { '=': c === 0, '<>': c !== 0, '<': c < 0, '>': c > 0, '<=': c <= 0, '>=': c >= 0 }[n.op]; }
+      if (n.op === '&') return str(a) + str(b); const x = number(a), y = number(b);
+      if (n.op === '/' && y === 0) fail('#DIV/0!');
+      return safeResult(n.op === '+' ? x + y : n.op === '-' ? x - y : n.op === '*' ? x * y : n.op === '/' ? x / y : x ** y);
+    }
+    if (n.type !== 'call') fail('#ERROR!');
+    const name = n.name, args = n.args, evalAt = i => i < args.length ? this.evaluate(args[i], sheet, here) : null;
+    const arity = (lo, hi = lo) => { if (args.length < lo || args.length > hi) fail('#VALUE!', `${name}: invalid argument count.`); };
+    if (name === 'IF') { arity(2, 3); return logical(evalAt(0)) ? evalAt(1) : args.length === 3 ? evalAt(2) : false; }
+    if (name === 'IFERROR' || name === 'IFNA') { arity(2); try { return checkError(scalar(evalAt(0))); } catch (e) { if (e instanceof FormulaError && (name === 'IFERROR' || e.code === '#N/A')) return evalAt(1); throw e; } }
+    if (['ISNUMBER','ISTEXT','ISBLANK','ISLOGICAL'].includes(name)) { arity(1); try { const x = scalar(evalAt(0)); return name === 'ISNUMBER' ? typeof x === 'number' : name === 'ISTEXT' ? typeof x === 'string' : name === 'ISBLANK' ? x === null : typeof x === 'boolean'; } catch (e) { if (e instanceof FormulaError) return false; throw e; } }
+    if (name === 'ISERROR' || name === 'ISNA') { arity(1); try { scalar(evalAt(0)); return false; } catch (e) { return name === 'ISERROR' || e.code === '#N/A'; } }
+    if (name === 'IFS') { if (args.length < 2 || args.length % 2) fail('#VALUE!'); for (let i = 0; i < args.length; i += 2) if (logical(evalAt(i))) return evalAt(i + 1); fail('#N/A'); }
+    if (name === 'CHOOSE') { arity(2, 255); const i = Math.trunc(number(evalAt(0))); if (i < 1 || i >= args.length) fail('#VALUE!'); return evalAt(i); }
+    if (name === 'ROW' || name === 'COLUMN') { arity(0, 1); const ref = args[0]; if (ref && !['ref', 'range'].includes(ref.type)) fail('#VALUE!'); return name === 'ROW' ? (ref?.r ?? ref?.r1 ?? here.r) + 1 : (ref?.c ?? ref?.c1 ?? here.c) + 1; }
+    const fn = FUNCTIONS.get(name); if (!fn) fail('#NAME?', `Unsupported function: ${name}`);
+    arity(fn.min, fn.max); return safeResult(fn.execute(args.map((_, i) => evalAt(i))));
+  }
+}
+function rawValue(raw) {
+  if (raw === '' || raw == null) return null;
+  if (raw[0] === "'") return raw.slice(1);
+  if (/^(true|false)$/i.test(raw)) return /^true$/i.test(raw);
+  if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%?$/i.test(raw.trim())) { const n = Number(raw.trim().replace('%', '')); if (!Number.isFinite(n)) return new FormulaError('#NUM!'); return raw.trim().endsWith('%') ? n / 100 : n; }
+  if (/^#(?:REF!|DIV\/0!|VALUE!|NAME\?|N\/A|NUM!|NULL!|CYCLE!)$/.test(raw)) return new FormulaError(raw);
+  return raw;
+}
+const formatters = new Map();
+function numFormat(locale, options, value) { const key = JSON.stringify([locale, options]); if (!formatters.has(key)) formatters.set(key, new Intl.NumberFormat(locale, options)); return formatters.get(key).format(value); }
+function formatValue(value, style = {}) {
+  if (value instanceof FormulaError) return value.code;
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+  if (typeof value !== 'number') return String(value);
+  const fmt = style.format || 'general', dp = style.decimals;
+  if (fmt === 'date' || /[ymd]/i.test(fmt) && !/[Ee][+-]/.test(fmt) && fmt !== 'number' && fmt !== 'currency') return serialDate(value).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+  if (fmt === 'percent' || fmt.includes('%')) return numFormat('en-US', { style: 'percent', minimumFractionDigits: dp ?? (fmt === 'percent' ? 1 : (fmt.split('.')[1]?.match(/[0#]/g)?.length ?? 0)), maximumFractionDigits: dp ?? (fmt === 'percent' ? 1 : (fmt.split('.')[1]?.match(/[0#]/g)?.length ?? 0)) }, value);
+  if (fmt === 'currency' || /[$€£]/.test(fmt)) return numFormat('en-US', { style: 'currency', currency: fmt.includes('€') ? 'EUR' : fmt.includes('£') ? 'GBP' : 'USD', minimumFractionDigits: dp ?? 0, maximumFractionDigits: dp ?? 0 }, value);
+  if (fmt === 'number' || fmt === 'integer' || /[0#]/.test(fmt)) { const d = dp ?? (fmt === 'integer' ? 0 : fmt === 'number' ? 2 : (fmt.split('.')[1]?.match(/[0#]/g)?.length ?? 0)); return numFormat('en-US', { useGrouping: true, minimumFractionDigits: d, maximumFractionDigits: d }, value); }
+  if (dp !== undefined) return numFormat('en-US', { useGrouping: false, minimumFractionDigits: dp, maximumFractionDigits: dp }, value);
+  return Math.abs(value) >= 1e12 || Math.abs(value) < 1e-8 && value !== 0 ? value.toExponential(5) : String(Number(value.toPrecision(12)));
+}
+let nextSheetId = 1;
+class Sheet {
+  constructor(name = 'Sheet1', data = null) {
+    this.id = `s${Date.now().toString(36)}${nextSheetId++}`; this.name = name; this.cells = new Map(); this.colWidths = new Map(); this.rowHeights = new Map();
+    this.merges = []; this.conditionalRules = []; this.hiddenRows = new Set(); this.filters = null; this.freezeRows = 0; this.freezeCols = 0; this.charts = []; this.gridlines = true; this.color = '#18835a'; this.revision = 0; this._used = null;
+    if (data) { for (const prop of ['id','name','merges','conditionalRules','filters','freezeRows','freezeCols','charts','gridlines','color','revision','protected','dataRegion']) if (Object.hasOwn(data, prop)) this[prop] = data[prop]; this.cells = new Map(data.cells ?? []); this.colWidths = new Map(data.colWidths ?? []); this.rowHeights = new Map(data.rowHeights ?? []); this.hiddenRows = new Set(data.hiddenRows ?? []); this._used = null; }
+  }
+  get(r, c) { return this.cells.get(keyOf(r, c)); }
+  raw(r, c) { return this.get(r, c)?.raw ?? ''; }
+  usedRange() {
+    if (this._used) return this._used;
+    let r2 = 0, c2 = 0; for (const [key, cell] of this.cells) { if (!cell.raw && !cell.style) continue; const [r, c] = key.split(',').map(Number); r2 = Math.max(r2, r); c2 = Math.max(c2, c); }
+    return this._used = { r1: 0, c1: 0, r2, c2 };
+  }
+  mergeAt(r, c) { return this.merges.find(q => r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2); }
+  toJSON() {
+    const { _used, ...rest } = this; return { ...rest, cells: [...this.cells], colWidths: [...this.colWidths], rowHeights: [...this.rowHeights], hiddenRows: [...this.hiddenRows] };
+  }
+}
+class Workbook {
+  constructor() { this.title = 'Untitled workbook'; this.sheets = [new Sheet()]; this.activeSheetId = this.sheets[0].id; this.names = {}; this.listeners = new Set(); this.engine = new CalculationEngine(this); this.undoStack = []; this.redoStack = []; this._transaction = null; this.revision = 0; }
+  get activeSheet() { return this.sheets.find(x => x.id === this.activeSheetId) ?? this.sheets[0]; }
+  sheetByName(name) { return this.sheets.find(x => x.name.toLowerCase() === name.toLowerCase()); }
+  onChange(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
+  emit(label, full = false) { this.revision++; for (const fn of this.listeners) fn({ label, full, revision: this.revision }); }
+  toJSON() { return { format: 'gridline', version: 1, title: this.title, activeSheetId: this.activeSheetId, names: this.names, sheets: this.sheets.map(s => s.toJSON()) }; }
+  static fromJSON(data) {
+    if (!data || data.format !== 'gridline' || data.version !== 1 || !Array.isArray(data.sheets) || !data.sheets.length || data.sheets.length > 256) throw new Error('Not a supported Gridline workbook.');
+    const wb = new Workbook(); wb.title = String(data.title ?? 'Workbook').slice(0, 200); wb.names = data.names && typeof data.names === 'object' ? { ...data.names } : {};
+    wb.sheets = data.sheets.map(d => {
+      if (!Array.isArray(d.cells) || d.cells.length > 1000000) throw new Error('Workbook cell limit exceeded.');
+      const sheet = new Sheet(String(d.name).slice(0, 31), d); sheet.name = String(d.name).slice(0, 31);
+      for (const [k, cell] of sheet.cells) { const [r, c] = k.split(',').map(Number); if (!Number.isInteger(r) || !Number.isInteger(c) || r < 0 || c < 0 || r >= MAX_ROWS || c >= MAX_COLS || typeof cell.raw !== 'string') throw new Error('Invalid cell record.'); }
+      return sheet;
+    });
+    if (new Set(wb.sheets.map(s => s.id)).size !== wb.sheets.length || new Set(wb.sheets.map(s => s.name.toLowerCase())).size !== wb.sheets.length) throw new Error('Duplicate sheet identities.');
+    wb.activeSheetId = data.activeSheetId; return wb;
+  }
+  restore(data) { const w = Workbook.fromJSON(data); this.title = w.title; this.sheets = w.sheets; this.activeSheetId = w.activeSheetId; this.names = w.names; this.engine.invalidate(); }
+  value(sheet, r, c) { return this.engine.get(sheet, r, c); }
+  display(sheet, r, c) { const cell = sheet.get(r, c); let style = cell?.style ?? {}; if (!style.format && cell?.raw.trim().endsWith('%')) style = { ...style, format: 'percent' }; return formatValue(this.value(sheet, r, c), style); }
+  transaction(label, fn) {
+    if (this._transaction) return fn();
+    const tx = { label, changes: new Map() }; this._transaction = tx;
+    try { fn(); } catch (e) {
+      for (const change of tx.changes.values()) { const s = this.sheets.find(s => s.id === change.sid); if (change.before === undefined) s.cells.delete(change.key); else s.cells.set(change.key, change.before); s._used = null; }
+      this.engine.invalidate(); throw e;
+    } finally { this._transaction = null; }
+    if (!tx.changes.size) return;
+    const changes = [...tx.changes.values()]; for (const x of changes) x.after = clone(this.sheets.find(s => s.id === x.sid).cells.get(x.key));
+    this.undoStack.push({ kind: 'cells', label, changes }); this.trimHistory(); this.redoStack = [];
+    this.engine.invalidate(changes.map(x => `${x.sid}!${x.key}`)); this.emit(label);
+  }
+  trimHistory() { if (this.undoStack.length > 100) this.undoStack.shift(); }
+  setCell(sheet, r, c, patch) {
+    if (!Number.isInteger(r) || !Number.isInteger(c) || r < 0 || c < 0 || r >= MAX_ROWS || c >= MAX_COLS) throw new Error('Cell is outside the sheet.');
+    if (!this._transaction) return this.transaction('Edit cell', () => this.setCell(sheet, r, c, patch));
+    const key = keyOf(r, c), id = `${sheet.id}!${key}`, before = sheet.cells.get(key);
+    if (!this._transaction.changes.has(id)) this._transaction.changes.set(id, { sid: sheet.id, key, before: clone(before) });
+    if (patch === null) sheet.cells.delete(key);
+    else {
+      const next = { raw: '', ...clone(before), ...clone(patch) }; next.raw = String(next.raw).slice(0, 32767);
+      if (patch.style) next.style = { ...before?.style, ...clone(patch.style) };
+      if (!next.raw && !next.style && !next.note) sheet.cells.delete(key); else sheet.cells.set(key, next);
+    }
+    sheet.revision++; sheet._used = null;
+    this.engine.invalidate([id]);
+  }
+  setRaw(sheet, r, c, raw) { this.setCell(sheet, r, c, { raw: String(raw) }); }
+  applyStyle(sheet, q, style) { this.transaction('Format cells', () => { for (const { r, c } of cellsIn(q)) this.setCell(sheet, r, c, { style }); }); }
+  clear(sheet, q, all = false) { this.transaction('Clear cells', () => { for (const [key] of sheet.cells) { const [r, c] = key.split(',').map(Number); if (r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2) this.setCell(sheet, r, c, all ? null : { raw: '' }); } }); }
+  mutate(label, fn) {
+    const before = clone(this.toJSON());
+    try { fn(); } catch (e) { this.restore(before); throw e; }
+    this.engine.invalidate(); for (const s of this.sheets) { s._used = null; s.revision++; }
+    const after = clone(this.toJSON()); this.undoStack.push({ kind: 'snapshot', label, before, after }); this.trimHistory(); this.redoStack = []; this.emit(label, true);
+  }
+  historyStep(from, to, mode) {
+    const cmd = from.pop(); if (!cmd) return false;
+    if (cmd.kind === 'snapshot') this.restore(cmd[mode]);
+    else { for (const x of cmd.changes) { const s = this.sheets.find(s => s.id === x.sid); if (!s) continue; if (x[mode] === undefined) s.cells.delete(x.key); else s.cells.set(x.key, clone(x[mode])); s._used = null; s.revision++; } this.engine.invalidate(cmd.changes.map(x => `${x.sid}!${x.key}`)); }
+    to.push(cmd); this.emit(`${mode === 'before' ? 'Undo' : 'Redo'} ${cmd.label}`, cmd.kind === 'snapshot'); return true;
+  }
+  undo() { return this.historyStep(this.undoStack, this.redoStack, 'before'); }
+  redo() { return this.historyStep(this.redoStack, this.undoStack, 'after'); }
+  uniqueSheetName(base = 'Sheet') { let name = base.slice(0, 31), i = 2; while (this.sheetByName(name)) name = `${base.slice(0, 26)} ${i++}`; return name; }
+  addSheet(name = 'Sheet') { let sheet; this.mutate('Add sheet', () => { sheet = new Sheet(this.uniqueSheetName(name)); this.sheets.push(sheet); this.activeSheetId = sheet.id; }); return sheet; }
+  renameSheet(sheet, name) {
+    name = name.trim(); if (!name || name.length > 31 || /[\\/*?:\[\]]/.test(name)) throw new Error('Use a unique name of 1–31 characters without \\ / * ? : [ ].');
+    if (this.sheets.some(s => s !== sheet && s.name.toLowerCase() === name.toLowerCase())) throw new Error('A sheet already has that name.');
+    this.mutate('Rename sheet', () => {
+      const old = sheet.name; sheet.name = name;
+      const renameReferences = source => {
+        let tokens; try { tokens = tokenizeFormula(source); } catch { return source; }
+        return replaceSpans(source, tokens.filter((t, i) => tokens[i + 1]?.value === '!' && t.value.toLowerCase() === old.toLowerCase()).map(t => ({ ...t, text: `'${name.replaceAll("'", "''")}'` })));
+      };
+      for (const s of this.sheets) for (const cell of s.cells.values()) if (cell.raw.startsWith('=')) cell.raw = renameReferences(cell.raw);
+      for (const [key, target] of Object.entries(this.names)) this.names[key] = renameReferences('=' + target).slice(1);
+    });
+  }
+  duplicateSheet(sheet) { this.mutate('Duplicate sheet', () => { const copy = new Sheet('', clone(sheet.toJSON())); copy.id = `s${Date.now().toString(36)}${nextSheetId++}`; copy.name = this.uniqueSheetName(sheet.name + ' copy'); this.sheets.push(copy); this.activeSheetId = copy.id; }); }
+  deleteSheet(sheet) { if (this.sheets.length === 1) throw new Error('A workbook needs at least one sheet.'); this.mutate('Delete sheet', () => { this.sheets = this.sheets.filter(s => s !== sheet); if (this.activeSheetId === sheet.id) this.activeSheetId = this.sheets[0].id; }); }
+  fill(sheet, source, target) {
+    this.transaction('Fill cells', () => {
+      const h = source.r2 - source.r1 + 1, w = source.c2 - source.c1 + 1;
+      const originals = new Map(); for (const p of cellsIn(source)) originals.set(keyOf(p.r, p.c), clone(sheet.get(p.r, p.c) ?? { raw: '' }));
+      const verticalSeries = w === 1 && h === 2 && [source.r1, source.r2].every(r => typeof rawValue(sheet.raw(r, source.c1)) === 'number');
+      const horizontalSeries = h === 1 && w === 2 && [source.c1, source.c2].every(c => typeof rawValue(sheet.raw(source.r1, c)) === 'number');
+      for (const { r, c } of cellsIn(target)) {
+        if (r >= source.r1 && r <= source.r2 && c >= source.c1 && c <= source.c2) continue;
+        const sr = source.r1 + ((r - source.r1) % h + h) % h, sc = source.c1 + ((c - source.c1) % w + w) % w;
+        const cell = clone(originals.get(keyOf(sr, sc))); cell.raw = shiftFormula(cell.raw, r - sr, c - sc);
+        if (verticalSeries) { const start = number(rawValue(originals.get(keyOf(source.r1, source.c1)).raw)), end = number(rawValue(originals.get(keyOf(source.r2, source.c1)).raw)); cell.raw = String(start + (end - start) * (r - source.r1)); }
+        if (horizontalSeries) { const start = number(rawValue(originals.get(keyOf(source.r1, source.c1)).raw)), end = number(rawValue(originals.get(keyOf(source.r1, source.c2)).raw)); cell.raw = String(start + (end - start) * (c - source.c1)); }
+        this.setCell(sheet, r, c, cell);
+      }
+    });
+  }
+  structuralEdit(sheet, axis, at, delta) {
+    this.mutate(`${delta > 0 ? 'Insert' : 'Delete'} ${axis}`, () => {
+      const coord = axis === 'row' ? 0 : 1, limit = axis === 'row' ? MAX_ROWS : MAX_COLS, next = new Map();
+      for (const [key, cell] of sheet.cells) { const p = key.split(',').map(Number); if (delta < 0 && p[coord] === at) continue; if (p[coord] >= at) p[coord] += delta; if (p[coord] < limit) next.set(keyOf(...p), cell); }
+      sheet.cells = next;
+      const sizes = axis === 'row' ? 'rowHeights' : 'colWidths', mapped = new Map();
+      for (const [i, size] of sheet[sizes]) { if (delta < 0 && i === at) continue; const n = i >= at ? i + delta : i; if (n < limit) mapped.set(n, size); } sheet[sizes] = mapped;
+      sheet.hiddenRows.clear(); sheet.filters = null; sheet.dataRegion = null;
+      const a = axis === 'row' ? 'r1' : 'c1', b = axis === 'row' ? 'r2' : 'c2';
+      sheet.merges = sheet.merges.filter(q => !(delta < 0 && q[a] === at && q[b] === at)).map(q => { const n = { ...q }; if (delta > 0) { if (n[a] >= at) n[a]++; if (n[b] >= at) n[b]++; } else { if (n[a] > at) n[a]--; if (n[b] >= at) n[b]--; } return n; });
+      for (const s of this.sheets) for (const cell of s.cells.values()) cell.raw = rewriteStructure(cell.raw, s.name, sheet.name, axis, at, delta);
+      for (const [name, value] of Object.entries(this.names)) this.names[name] = rewriteStructure('=' + value, sheet.name, sheet.name, axis, at, delta).slice(1);
+      // Chart/conditional ranges are layout metadata; conservatively discard rules whose coordinates would become stale.
+      sheet.conditionalRules = []; sheet.charts = [];
+    });
+  }
+  sort(sheet, q, column, descending = false, header = true) {
+    const first = q.r1 + (header ? 1 : 0); if (first > q.r2) return;
+    const rows = []; for (let r = first; r <= q.r2; r++) rows.push({ r, value: this.value(sheet, r, column), cells: Array.from({ length: q.c2 - q.c1 + 1 }, (_, i) => clone(sheet.get(r, q.c1 + i) ?? { raw: '' })) });
+    rows.sort((a, b) => { if (a.value == null) return b.value == null ? a.r - b.r : 1; if (b.value == null) return -1; return (compare(a.value instanceof FormulaError ? a.value.code : a.value, b.value instanceof FormulaError ? b.value.code : b.value) * (descending ? -1 : 1)) || a.r - b.r; });
+    this.transaction('Sort range', () => rows.forEach((row, i) => row.cells.forEach((cell, j) => { cell.raw = shiftFormula(cell.raw, first + i - row.r, 0); this.setCell(sheet, first + i, q.c1 + j, cell); })));
+  }
+}
+
+return { MAX_ROWS, MAX_COLS, MAX_RANGE_CELLS, keyOf, colName, address, parseAddress, normalizedRange, parseRange, rangeAddress, cellsIn, FormulaError, RangeValue, tokenizeFormula, FormulaParser, shiftFormula, dateSerial, serialDate, FUNCTIONS, CalculationEngine, rawValue, formatValue, Sheet, Workbook };
+})();
+
+// ===== renderer.js =====
+__modules["renderer"] = (() => {
+/** Instanced WebGPU renderer: solid quads + cached glyph-mask atlas, one ordered draw call.
+ * Canvas2D fallback consumes the same retained display list. Coordinates are CSS pixels.
+ */
+const { MAX_ROWS, MAX_COLS, colName, FormulaError, formatValue } = __modules["engine"];
+const rgbaCache = new Map();
+function rgba(color, alpha = 1) {
+  const id = `${color}/${alpha}`; if (rgbaCache.has(id)) return rgbaCache.get(id);
+  let h = (color || '#ffffff').replace('#', ''); if (h.length === 3) h = h.split('').map(x => x + x).join('');
+  if (!/^[0-9a-f]{6}$/i.test(h)) h = 'ffffff';
+  const v = [parseInt(h.slice(0, 2), 16) / 255, parseInt(h.slice(2, 4), 16) / 255, parseInt(h.slice(4, 6), 16) / 255, alpha]; rgbaCache.set(id, v); return v;
+}
+class AxisLayout {
+  constructor(count, defaultSize, overrides = new Map(), hidden = new Set()) {
+    this.count = count; this.defaultSize = defaultSize;
+    const map = new Map(overrides); for (const i of hidden) map.set(i, 0);
+    this.entries = [...map].filter(([i]) => i >= 0 && i < count).sort((a, b) => a[0] - b[0]);
+    this.indexes = this.entries.map(e => e[0]); this.sizes = new Map(this.entries); this.prefix = [0];
+    for (const [, size] of this.entries) this.prefix.push(this.prefix.at(-1) + size - defaultSize);
+  }
+  lowerBound(i) { let lo = 0, hi = this.indexes.length; while (lo < hi) { const m = (lo + hi) >> 1; if (this.indexes[m] < i) lo = m + 1; else hi = m; } return lo; }
+  offset(i) { return i * this.defaultSize + this.prefix[this.lowerBound(i)]; }
+  size(i) { return this.sizes.get(i) ?? this.defaultSize; }
+  find(pixel) { let lo = 0, hi = this.count - 1; while (lo < hi) { const m = Math.ceil((lo + hi) / 2); if (this.offset(m) <= pixel) lo = m; else hi = m - 1; } while (lo < this.count - 1 && this.size(lo) === 0) lo++; return lo; }
+}
+class GlyphAtlas {
+  constructor(scale = 2) {
+    this.size = 2048; this.scale = Math.min(3, Math.max(1, scale)); this.canvas = document.createElement('canvas'); this.canvas.width = this.canvas.height = this.size;
+    this.ctx = this.canvas.getContext('2d', { willReadFrequently: true }); this.ctx.textBaseline = 'alphabetic'; this.map = new Map(); this.x = 2; this.y = 2; this.rowHeight = 0; this.dirty = false; this.overflow = false;
+  }
+  reset(scale) { this.scale = Math.min(3, Math.max(1, scale)); this.map.clear(); this.ctx.clearRect(0, 0, this.size, this.size); this.x = this.y = 2; this.rowHeight = 0; this.dirty = true; this.overflow = false; }
+  glyph(char, font) {
+    const id = font + '\0' + char; if (this.map.has(id)) return this.map.get(id);
+    const ctx = this.ctx; ctx.font = font; const metrics = ctx.measureText(char), advance = metrics.width;
+    const left = Math.ceil(Math.max(0, metrics.actualBoundingBoxLeft || 0)) + 2;
+    const right = Math.ceil(Math.max(advance, metrics.actualBoundingBoxRight || advance)) + 2;
+    const ascent = Math.ceil(metrics.actualBoundingBoxAscent || parseFloat(font.match(/(\d+(?:\.\d+)?)px/)?.[1]) * 0.8 || 12) + 2;
+    const descent = Math.ceil(metrics.actualBoundingBoxDescent || 3) + 2;
+    const w = Math.ceil((left + right) * this.scale), h = Math.ceil((ascent + descent) * this.scale);
+    if (this.x + w + 2 > this.size) { this.x = 2; this.y += this.rowHeight + 2; this.rowHeight = 0; }
+    if (this.y + h + 2 > this.size) { this.overflow = true; return null; }
+    ctx.save(); ctx.translate(this.x, this.y); ctx.scale(this.scale, this.scale); ctx.font = font; ctx.fillStyle = '#ffffff'; ctx.textBaseline = 'alphabetic'; ctx.fillText(char, left, ascent); ctx.restore();
+    const glyph = { u: this.x / this.size, v: this.y / this.size, uw: w / this.size, vh: h / this.size, w: w / this.scale, h: h / this.scale, left, ascent, advance };
+    this.map.set(id, glyph); this.x += w + 2; this.rowHeight = Math.max(this.rowHeight, h); this.dirty = true; return glyph;
+  }
+}
+const SHADER = `
+struct Globals { viewport: vec2f, padding: vec2f };
+@group(0) @binding(0) var<uniform> globals: Globals;
+@group(0) @binding(1) var atlas: texture_2d<f32>;
+@group(0) @binding(2) var atlasSampler: sampler;
+struct In {
+  @location(0) rect: vec4f,
+  @location(1) uv: vec4f,
+  @location(2) color: vec4f,
+  @location(3) clip: vec4f,
+};
+struct Out {
+  @builtin(position) position: vec4f,
+  @location(0) uv: vec2f,
+  @location(1) color: vec4f,
+  @location(2) point: vec2f,
+  @location(3) @interpolate(flat) clip: vec4f,
+  @location(4) @interpolate(flat) textured: f32,
+};
+@vertex fn vs(input: In, @builtin(vertex_index) index: u32) -> Out {
+  let vertices = array<vec2f, 6>(vec2f(0,0),vec2f(1,0),vec2f(0,1),vec2f(0,1),vec2f(1,0),vec2f(1,1));
+  let v = vertices[index]; let p = input.rect.xy + v * input.rect.zw;
+  var o: Out; o.position = vec4f(p.x / globals.viewport.x * 2.0 - 1.0, 1.0 - p.y / globals.viewport.y * 2.0, 0, 1);
+  o.uv = input.uv.xy + v * input.uv.zw; o.color = input.color; o.point = p; o.clip = input.clip;
+  o.textured = select(0.0, 1.0, input.uv.z > 0); return o;
+}
+@fragment fn fs(input: Out) -> @location(0) vec4f {
+  if (input.point.x < input.clip.x || input.point.y < input.clip.y || input.point.x >= input.clip.z || input.point.y >= input.clip.w) { discard; }
+  let mask = textureSampleLevel(atlas, atlasSampler, input.uv, 0.0).a;
+  let alpha = input.color.a * select(1.0, mask, input.textured > 0);
+  return vec4f(input.color.rgb * alpha, alpha);
+}`;
+class GridRenderer {
+  constructor(host, workbook, onBackend) {
+    this.host = host; this.workbook = workbook; this.onBackend = onBackend; this.canvas = document.createElement('canvas'); this.canvas.className = 'grid-canvas'; this.canvas.setAttribute('aria-hidden', 'true'); host.prepend(this.canvas);
+    this.backend = 'initializing'; this.width = 1; this.height = 1; this.zoom = 1; this.scrollX = 0; this.scrollY = 0;
+    this.headerW = 46; this.headerH = 27; this.selection = { r1: 12, c1: 6, r2: 12, c2: 6 }; this.active = { r: 12, c: 6 }; this.showFormulas = false; this.dark = false;
+    this.atlas = new GlyphAtlas(Math.max(2, window.devicePixelRatio || 1)); this.measureCanvas = document.createElement('canvas'); this.measure = this.measureCanvas.getContext('2d'); this.textWidths = new Map();
+    this.commands = []; this.instances = new Float32Array(65536); this.instanceCount = 0; this.frameRequested = false; this.lastFrameMs = 0; this.visibleCellCount = 0; this.onFrame = null; this.disposed = false;
+    this.resizeObserver = new ResizeObserver(() => this.resize()); this.resizeObserver.observe(host); this.syncLayout();
+  }
+  async initialize(forceCanvas = false) {
+    if (!forceCanvas && navigator.gpu) {
+      try {
+        const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }); if (!adapter) throw new Error('No WebGPU adapter.');
+        this.device = await adapter.requestDevice(); this.device.addEventListener('uncapturederror', e => { console.error('WebGPU:', e.error.message); this.fallback('WebGPU validation failure'); });
+        const module = this.device.createShaderModule({ label: 'Gridline instanced sheet shader', code: SHADER });
+        const info = await module.getCompilationInfo(); if (info.messages.some(m => m.type === 'error')) throw new Error(info.messages.filter(m => m.type === 'error').map(m => m.message).join('\n'));
+        const format = navigator.gpu.getPreferredCanvasFormat(); this.context = this.canvas.getContext('webgpu'); if (!this.context) throw new Error('WebGPU canvas context unavailable.');
+        this.context.configure({ device: this.device, format, alphaMode: 'opaque' });
+        this.pipeline = await this.device.createRenderPipelineAsync({ label: 'Gridline sheet pipeline', layout: 'auto',
+          vertex: { module, entryPoint: 'vs', buffers: [{ arrayStride: 64, stepMode: 'instance', attributes: [0, 1, 2, 3].map(i => ({ shaderLocation: i, offset: i * 16, format: 'float32x4' })) }] },
+          fragment: { module, entryPoint: 'fs', targets: [{ format, blend: { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' } } }] },
+          primitive: { topology: 'triangle-list' }
+        });
+        this.uniform = this.device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        this.texture = this.device.createTexture({ label: 'Glyph mask atlas', size: [this.atlas.size, this.atlas.size], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+        this.sampler = this.device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+        this.bindGroup = this.device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: this.uniform } }, { binding: 1, resource: this.texture.createView() }, { binding: 2, resource: this.sampler }] });
+        this.backend = 'webgpu'; this.adapterInfo = adapter.info?.description || adapter.info?.architecture || 'WebGPU';
+        this.device.lost.then(info => { if (!this.disposed && this.backend === 'webgpu') this.fallback(info.message || 'GPU device lost'); });
+      } catch (error) { console.warn('Gridline WebGPU fallback:', error.message); this.fallbackReason = error.message; this.createFallback(); }
+    } else { this.fallbackReason = forceCanvas ? 'Canvas renderer requested.' : 'WebGPU is not exposed by this browser.'; this.createFallback(); }
+    this.resize(); this.onBackend?.(this.backend, this.fallbackReason); this.requestFrame(); return this.backend;
+  }
+  createFallback() {
+    if (this.context) { const replacement = this.canvas.cloneNode(false); this.canvas.replaceWith(replacement); this.canvas = replacement; this.context = null; }
+    this.ctx = this.canvas.getContext('2d', { alpha: false }); this.backend = 'canvas2d';
+  }
+  fallback(reason) { if (this.backend === 'canvas2d') return; this.fallbackReason = reason; this.createFallback(); this.onBackend?.(this.backend, reason); this.resize(); this.requestFrame(); }
+  resize() {
+    const box = this.host.getBoundingClientRect(); this.width = Math.max(1, Math.floor(box.width)); this.height = Math.max(1, Math.floor(box.height));
+    this.dpr = Math.min(window.devicePixelRatio || 1, 3); this.canvas.width = Math.round(this.width * this.dpr); this.canvas.height = Math.round(this.height * this.dpr);
+    this.canvas.style.width = this.width + 'px'; this.canvas.style.height = this.height + 'px'; this.requestFrame();
+  }
+  syncLayout() {
+    const sheet = this.workbook.activeSheet; this.cols = new AxisLayout(MAX_COLS, 106, sheet.colWidths); this.rows = new AxisLayout(MAX_ROWS, 27, sheet.rowHeights, sheet.hiddenRows); this.requestFrame();
+  }
+  setZoom(zoom) {
+    const old = this.zoom; this.zoom = Math.max(0.5, Math.min(2, zoom)); this.scrollX *= this.zoom / old; this.scrollY *= this.zoom / old;
+    this.atlas.reset(Math.max(2, this.dpr || 1)); this.textWidths.clear(); this.requestFrame();
+  }
+  frozenSize() { const sheet = this.workbook.activeSheet; return { x: this.cols.offset(sheet.freezeCols) * this.zoom, y: this.rows.offset(sheet.freezeRows) * this.zoom }; }
+  cellRect(r, c, merge = true) {
+    const sheet = this.workbook.activeSheet, q = merge ? sheet.mergeAt(r, c) : null;
+    if (q) { r = q.r1; c = q.c1; }
+    const z = this.zoom;
+    return { x: this.headerW + this.cols.offset(c) * z - (c < sheet.freezeCols ? 0 : this.scrollX), y: this.headerH + this.rows.offset(r) * z - (r < sheet.freezeRows ? 0 : this.scrollY), w: (this.cols.offset(q ? q.c2 + 1 : c + 1) - this.cols.offset(c)) * z, h: (this.rows.offset(q ? q.r2 + 1 : r + 1) - this.rows.offset(r)) * z };
+  }
+  hitTest(x, y) {
+    const sheet = this.workbook.activeSheet, frozen = this.frozenSize();
+    const px = Math.max(0, x - this.headerW), py = Math.max(0, y - this.headerH);
+    let c = this.cols.find((px + (px >= frozen.x ? this.scrollX : 0)) / this.zoom), r = this.rows.find((py + (py >= frozen.y ? this.scrollY : 0)) / this.zoom);
+    const merge = sheet.mergeAt(r, c); if (merge) { r = merge.r1; c = merge.c1; }
+    return { r, c, rowHeader: x < this.headerW, colHeader: y < this.headerH };
+  }
+  ensureVisible(r, c) {
+    const sheet = this.workbook.activeSheet, frozen = this.frozenSize(), rect = this.cellRect(r, c);
+    if (c >= sheet.freezeCols) { if (rect.x < this.headerW + frozen.x) this.scrollX -= this.headerW + frozen.x - rect.x; else if (rect.x + rect.w > this.width - 14) this.scrollX += rect.x + rect.w - this.width + 14; }
+    if (r >= sheet.freezeRows) { if (rect.y < this.headerH + frozen.y) this.scrollY -= this.headerH + frozen.y - rect.y; else if (rect.y + rect.h > this.height - 14) this.scrollY += rect.y + rect.h - this.height + 14; }
+    this.clampScroll(); this.requestFrame();
+  }
+  clampScroll() { this.scrollX = Math.max(0, Math.min(this.scrollX, this.cols.offset(MAX_COLS) * this.zoom - this.width + this.headerW)); this.scrollY = Math.max(0, Math.min(this.scrollY, this.rows.offset(MAX_ROWS) * this.zoom - this.height + this.headerH)); }
+  requestFrame() { if (!this.frameRequested && !this.disposed) { this.frameRequested = true; requestAnimationFrame(() => { this.frameRequested = false; this.draw(); }); } }
+  rect(x, y, w, h, color, clip = [0, 0, this.width, this.height], alpha = 1) {
+    if (w <= 0 || h <= 0 || x > clip[2] || y > clip[3] || x + w < clip[0] || y + h < clip[1]) return;
+    this.commands.push({ kind: 'rect', x, y, w, h, color, clip, alpha });
+  }
+  outline(x, y, w, h, color, thickness = 1, clip) { this.rect(x, y, w, thickness, color, clip); this.rect(x, y + h - thickness, w, thickness, color, clip); this.rect(x, y, thickness, h, color, clip); this.rect(x + w - thickness, y, thickness, h, color, clip); }
+  font(style = {}) { return `${style.italic ? 'italic ' : ''}${style.bold ? '600' : '400'} ${(style.fontSize ?? 13) * this.zoom}px ${style.fontFamily || 'Aptos, "Segoe UI", Arial, sans-serif'}`; }
+  measureText(text, font) { const key = font + '|' + text; if (this.textWidths.has(key)) return this.textWidths.get(key); this.measure.font = font; const width = this.measure.measureText(text).width; if (this.textWidths.size > 20000) this.textWidths.clear(); this.textWidths.set(key, width); return width; }
+  text(text, x, baseline, color, style = {}, clip = [0, 0, this.width, this.height]) {
+    text = String(text); if (!text) return; const font = this.font(style);
+    this.commands.push({ kind: 'text', text, x, baseline, color, font, clip, underline: style.underline });
+  }
+  cellText(text, value, style, rect, clip) {
+    const pad = 9 * this.zoom, font = this.font(style), size = (style.fontSize ?? 13) * this.zoom, avail = Math.max(0, rect.w - pad * 2);
+    const align = style.align || (typeof value === 'number' ? 'right' : 'left');
+    const baseClip = [Math.max(rect.x + 1, clip[0]), Math.max(rect.y + 1, clip[1]), Math.min(rect.x + rect.w - 2, clip[2]), Math.min(rect.y + rect.h - 1, clip[3])];
+    const color = value instanceof FormulaError ? '#c7473d' : style.color || (this.dark ? '#dfebe5' : '#293b32');
+    let lines = [text];
+    if (style.wrap) {
+      lines = []; const paragraphs = text.split('\n');
+      for (const paragraph of paragraphs) {
+        let line = ''; for (const word of paragraph.split(' ')) { const candidate = line ? `${line} ${word}` : word; if (line && this.measureText(candidate, font) > avail) { lines.push(line); line = word; } else line = candidate; } lines.push(line);
+      }
+      lines = lines.slice(0, Math.max(1, Math.floor(rect.h / (size * 1.3))));
+    }
+    const lineH = size * 1.3, totalH = lines.length * lineH;
+    lines.forEach((line, i) => {
+      let width = this.measureText(line, font);
+      if (typeof value === 'number' && !style.wrap && width > avail) { line = '#'.repeat(Math.max(1, Math.floor(avail / this.measureText('#', font)))); width = this.measureText(line, font); }
+      const x = align === 'right' ? rect.x + rect.w - pad - width : align === 'center' ? rect.x + (rect.w - width) / 2 : rect.x + pad;
+      const baseline = rect.y + (rect.h - totalH) / 2 + lineH * i + size * 0.99;
+      this.text(line, x, baseline, color, style, baseClip);
+    });
+  }
+  visibleIndices(axis, scroll, size, frozenCount, header) {
+    const frozen = axis.offset(frozenCount) * this.zoom, list = [];
+    for (let i = 0; i < frozenCount && axis.offset(i) * this.zoom < size - header; i++) if (axis.size(i) > 0) list.push(i);
+    const first = Math.max(frozenCount, axis.find((scroll + frozen) / this.zoom)), end = Math.min(axis.count - 1, axis.find((scroll + size - header) / this.zoom) + 1);
+    for (let i = first; i <= end; i++) if (axis.size(i) > 0) list.push(i);
+    return list;
+  }
+  draw() {
+    if (this.backend === 'initializing' || this.disposed) return;
+    const started = performance.now(), sheet = this.workbook.activeSheet;
+    this.commands = []; this.instanceCount = 0; this.visibleCellCount = 0;
+    const bg = this.dark ? '#19251f' : '#ffffff', grid = this.dark ? '#2a3b31' : '#e6ebe8', head = this.dark ? '#21342a' : '#f4f7f5';
+    this.rect(0, 0, this.width, this.height, bg);
+    const rows = this.visibleIndices(this.rows, this.scrollY, this.height, sheet.freezeRows, this.headerH), cols = this.visibleIndices(this.cols, this.scrollX, this.width, sheet.freezeCols, this.headerW), frozen = this.frozenSize();
+    this.visibleRows = rows; this.visibleCols = cols;
+    const ruleStats = new Map();
+    for (const rule of sheet.conditionalRules) {
+      if (rule.type === 'bars' || rule.type === 'scale') {
+        let min = Infinity, max = -Infinity;
+        for (let r = rule.range.r1; r <= rule.range.r2 && r < rule.range.r1 + 10000; r++) for (let c = rule.range.c1; c <= rule.range.c2; c++) { const v = this.workbook.value(sheet, r, c); if (typeof v === 'number') { min = Math.min(min, v); max = Math.max(max, v); } }
+        ruleStats.set(rule, { min, max });
+      }
+    }
+    const drawnMerges = new Set();
+    for (const r of rows) for (const c of cols) {
+      let cellR = r, cellC = c; const merge = sheet.mergeAt(r, c);
+      if (merge) { const id = `${merge.r1},${merge.c1}`; if (drawnMerges.has(id)) continue; drawnMerges.add(id); cellR = merge.r1; cellC = merge.c1; }
+      const rect = this.cellRect(cellR, cellC), { x, y, w, h } = rect;
+      const clip = [this.headerW + (c < sheet.freezeCols ? 0 : frozen.x), this.headerH + (r < sheet.freezeRows ? 0 : frozen.y), c < sheet.freezeCols ? this.headerW + frozen.x : this.width, r < sheet.freezeRows ? this.headerH + frozen.y : this.height];
+      if (x + w <= clip[0] || y + h <= clip[1]) continue;
+      const cell = sheet.get(cellR, cellC), style = { ...cell?.style }, value = this.workbook.value(sheet, cellR, cellC); this.visibleCellCount++;
+      for (const rule of sheet.conditionalRules) {
+        const q = rule.range; if (r < q.r1 || r > q.r2 || c < q.c1 || c > q.c2) continue;
+        if (rule.type === 'positive' && typeof value === 'number') { style.color = value >= 0 ? '#16815c' : '#c14944'; style.bold = true; }
+        if (rule.type === 'greater' && typeof value === 'number' && value > rule.value) { style.fill = '#d9eee3'; style.color = '#166444'; }
+        if (rule.type === 'scale' && typeof value === 'number') {
+          const stats = ruleStats.get(rule), t = stats.max === stats.min ? 0.5 : (value - stats.min) / (stats.max - stats.min);
+          style.fill = '#' + [Math.round(243 - t * 74), Math.round(248 - t * 35), Math.round(241 - t * 52)].map(x => x.toString(16).padStart(2, '0')).join('');
+        }
+      }
+      if (style.fill) this.rect(x, y, w, h, style.fill, clip);
+      if (sheet.gridlines) { this.rect(x + w - 1, y, 1, h, grid, clip); this.rect(x, y + h - 1, w, 1, grid, clip); }
+      if (style.border) this.outline(x, y, w, h, style.borderColor || '#cbd8d0', 1, clip);
+      if (style.bottomBorder) this.rect(x, y + h - 2, w, 2, style.bottomBorder, clip);
+      for (const rule of sheet.conditionalRules) {
+        if (rule.type !== 'bars' || typeof value !== 'number') continue; const q = rule.range;
+        if (r < q.r1 || r > q.r2 || c < q.c1 || c > q.c2) continue;
+        const stats = ruleStats.get(rule), max = Math.max(Math.abs(stats.min), Math.abs(stats.max), 1);
+        this.rect(x + 4, y + 5, Math.max(0, (w - 8) * Math.abs(value) / max), h - 10, value < 0 ? '#f4ceca' : '#c5e9d7', clip, 0.8);
+      }
+      const text = this.showFormulas && cell?.raw.startsWith('=') ? cell.raw : this.workbook.display(sheet, cellR, cellC);
+      if (text) this.cellText(text, value, style, rect, clip);
+      if (cell?.note) this.rect(x + w - 7, y + 2, 5, 5, '#b691cc', clip);
+      if (sheet.filters && r === sheet.filters.range.r1 && c >= sheet.filters.range.c1 && c <= sheet.filters.range.c2) this.text('⌄', x + w - 12, y + h / 2 + 4, '#789185', { fontSize: 11 }, clip);
+    }
+    // Header strips occlude all scrolled cells, independently of selection and frozen panes.
+    this.rect(0, 0, this.width, this.headerH, head); this.rect(0, 0, this.headerW, this.height, head);
+    const q = this.selection, selectedHead = this.dark ? '#295b42' : '#e0f0e6';
+    for (const c of cols) {
+      const rect = this.cellRect(0, c, false), clip = [this.headerW + (c < sheet.freezeCols ? 0 : frozen.x), 0, c < sheet.freezeCols ? this.headerW + frozen.x : this.width, this.headerH];
+      if (c >= q.c1 && c <= q.c2) { this.rect(rect.x, 0, rect.w, this.headerH, selectedHead, clip); this.rect(rect.x, this.headerH - 2, rect.w, 2, '#18835a', clip); }
+      this.rect(rect.x + rect.w - 1, 0, 1, this.headerH, grid, clip);
+      const label = colName(c), font = { fontSize: 11, bold: c >= q.c1 && c <= q.c2 };
+      this.text(label, rect.x + (rect.w - this.measureText(label, this.font(font))) / 2, 18, this.dark ? '#a8bdb0' : '#64776c', font, clip);
+    }
+    for (const r of rows) {
+      const rect = this.cellRect(r, 0, false), clip = [0, this.headerH + (r < sheet.freezeRows ? 0 : frozen.y), this.headerW, r < sheet.freezeRows ? this.headerH + frozen.y : this.height];
+      if (r >= q.r1 && r <= q.r2) { this.rect(0, rect.y, this.headerW, rect.h, selectedHead, clip); this.rect(this.headerW - 2, rect.y, 2, rect.h, '#18835a', clip); }
+      this.rect(0, rect.y + rect.h - 1, this.headerW, 1, grid, clip);
+      const label = String(r + 1), font = { fontSize: 11, bold: r >= q.r1 && r <= q.r2 };
+      this.text(label, (this.headerW - this.measureText(label, this.font(font))) / 2, rect.y + rect.h / 2 + 4, this.dark ? '#a8bdb0' : '#64776c', font, clip);
+    }
+    this.rect(0, 0, this.headerW, this.headerH, head); this.text('◢', 28, 19, '#c3d1c8', { fontSize: 15 });
+    if (frozen.y) this.rect(this.headerW, this.headerH + frozen.y - 1, this.width, 2, '#b1c8ba');
+    if (frozen.x) this.rect(this.headerW + frozen.x - 1, this.headerH, 2, this.height, '#b1c8ba');
+    this.drawSelection(q, '#18835a', true);
+    if (this.copyRange) this.drawSelection(this.copyRange, '#63997d', false);
+    if (this.fillPreview) this.drawSelection(this.fillPreview, '#18835a', false);
+    if (this.backend === 'webgpu') this.flushGPU(); else this.flushCanvas();
+    this.lastFrameMs = performance.now() - started; this.onFrame?.();
+    if (this.atlas.overflow && this.backend === 'webgpu') this.fallback('Visible glyph set exceeds the bounded atlas capacity.');
+  }
+  drawSelection(q, color, handle) {
+    const sheet = this.workbook.activeSheet, frozen = this.frozenSize();
+    const regions = [
+      [0, sheet.freezeRows - 1, 0, sheet.freezeCols - 1, [this.headerW, this.headerH, this.headerW + frozen.x, this.headerH + frozen.y]],
+      [0, sheet.freezeRows - 1, sheet.freezeCols, MAX_COLS - 1, [this.headerW + frozen.x, this.headerH, this.width, this.headerH + frozen.y]],
+      [sheet.freezeRows, MAX_ROWS - 1, 0, sheet.freezeCols - 1, [this.headerW, this.headerH + frozen.y, this.headerW + frozen.x, this.height]],
+      [sheet.freezeRows, MAX_ROWS - 1, sheet.freezeCols, MAX_COLS - 1, [this.headerW + frozen.x, this.headerH + frozen.y, this.width, this.height]]
+    ];
+    for (const [r1, r2, c1, c2, clip] of regions) {
+      const a = { r: Math.max(q.r1, r1), c: Math.max(q.c1, c1) }, b = { r: Math.min(q.r2, r2), c: Math.min(q.c2, c2) }; if (a.r > b.r || a.c > b.c) continue;
+      const p = this.cellRect(a.r, a.c, false), end = this.cellRect(b.r, b.c, false), w = end.x + end.w - p.x, h = end.y + end.h - p.y;
+      if (handle && (q.r1 !== q.r2 || q.c1 !== q.c2)) this.rect(p.x, p.y, w, h, color, clip, 0.07);
+      this.outline(p.x, p.y, w, h, color, handle ? 2 : 1, clip);
+      if (handle && b.r === q.r2 && b.c === q.c2) { this.rect(p.x + w - 4, p.y + h - 4, 8, 8, '#ffffff', clip); this.rect(p.x + w - 3, p.y + h - 3, 6, 6, color, clip); }
+    }
+  }
+  addInstance(x, y, w, h, uv, color, clip) {
+    if ((this.instanceCount + 1) * 16 > this.instances.length) { const next = new Float32Array(this.instances.length * 2); next.set(this.instances); this.instances = next; }
+    const i = this.instanceCount++ * 16; this.instances.set([x, y, w, h, ...uv, ...color, ...clip], i);
+  }
+  flushGPU() {
+    for (const cmd of this.commands) {
+      if (cmd.kind === 'rect') this.addInstance(cmd.x, cmd.y, cmd.w, cmd.h, [0, 0, 0, 0], rgba(cmd.color, cmd.alpha), cmd.clip);
+      else {
+        let x = cmd.x;
+        for (const char of cmd.text) {
+          const glyph = this.atlas.glyph(char, cmd.font); if (!glyph) continue;
+          if (x + glyph.advance >= cmd.clip[0] && x <= cmd.clip[2]) this.addInstance(x - glyph.left, cmd.baseline - glyph.ascent, glyph.w, glyph.h, [glyph.u, glyph.v, glyph.uw, glyph.vh], rgba(cmd.color), cmd.clip);
+          x += glyph.advance; if (x > cmd.clip[2] + 30) break;
+        }
+        if (cmd.underline) this.addInstance(cmd.x, cmd.baseline + 2, x - cmd.x, 1, [0, 0, 0, 0], rgba(cmd.color), cmd.clip);
+      }
+    }
+    if (this.atlas.dirty) { this.device.queue.copyExternalImageToTexture({ source: this.atlas.canvas }, { texture: this.texture, premultipliedAlpha: false }, [this.atlas.size, this.atlas.size]); this.atlas.dirty = false; }
+    const bytes = this.instanceCount * 64;
+    if (!this.vertexBuffer || this.bufferSize < bytes) { this.vertexBuffer?.destroy(); this.bufferSize = Math.max(65536, 2 ** Math.ceil(Math.log2(bytes || 1))); this.vertexBuffer = this.device.createBuffer({ label: 'Visible cell instances', size: this.bufferSize, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST }); }
+    if (bytes) this.device.queue.writeBuffer(this.vertexBuffer, 0, this.instances.buffer, 0, bytes);
+    this.device.queue.writeBuffer(this.uniform, 0, new Float32Array([this.width, this.height, 0, 0]));
+    const encoder = this.device.createCommandEncoder(); const pass = encoder.beginRenderPass({ colorAttachments: [{ view: this.context.getCurrentTexture().createView(), clearValue: { r: 1, g: 1, b: 1, a: 1 }, loadOp: 'clear', storeOp: 'store' }] });
+    pass.setPipeline(this.pipeline); pass.setBindGroup(0, this.bindGroup); pass.setVertexBuffer(0, this.vertexBuffer); pass.draw(6, this.instanceCount); pass.end(); this.device.queue.submit([encoder.finish()]);
+  }
+  flushCanvas() {
+    const ctx = this.ctx; ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    for (const cmd of this.commands) {
+      ctx.save(); ctx.beginPath(); ctx.rect(cmd.clip[0], cmd.clip[1], cmd.clip[2] - cmd.clip[0], cmd.clip[3] - cmd.clip[1]); ctx.clip(); ctx.fillStyle = cmd.color;
+      if (cmd.kind === 'rect') { ctx.globalAlpha = cmd.alpha; ctx.fillRect(cmd.x, cmd.y, cmd.w, cmd.h); }
+      else { ctx.font = cmd.font; ctx.textBaseline = 'alphabetic'; ctx.fillText(cmd.text, cmd.x, cmd.baseline); if (cmd.underline) ctx.fillRect(cmd.x, cmd.baseline + 2, ctx.measureText(cmd.text).width, 1); }
+      ctx.restore();
+    }
+  }
+  dispose() { this.disposed = true; this.resizeObserver.disconnect(); this.vertexBuffer?.destroy(); this.uniform?.destroy(); this.texture?.destroy(); this.device?.destroy(); }
+}
+
+return { AxisLayout, GridRenderer };
+})();
+
+// ===== sample.js =====
+__modules["sample"] = (() => {
+const { Workbook, Sheet, keyOf, address } = __modules["engine"];
+function createSampleWorkbook() {
+  const wb = new Workbook(); wb.title = 'Revenue operations · FY2026';
+  const overview = new Sheet('Revenue overview'), transactions = new Sheet('Sales data'), assumptions = new Sheet('Assumptions'); wb.sheets = [overview, transactions, assumptions]; wb.activeSheetId = overview.id;
+  const put = (s, r, c, raw, style = {}) => s.cells.set(keyOf(r, c), { raw: String(raw), style });
+  const merge = (s, r1, c1, r2, c2) => s.merges.push({ r1, c1, r2, c2 });
+  const green = '#176b4a', ink = '#223e2f', muted = '#82978a', fill = '#eff6f1';
+  const widths = [24, 174, 98, 97, 97, 97, 113, 110, 102, 94, 118, 118, 36]; widths.forEach((w, i) => overview.colWidths.set(i, w));
+  overview.rowHeights.set(0, 15); overview.rowHeights.set(1, 38); overview.rowHeights.set(2, 26); overview.rowHeights.set(3, 20); overview.rowHeights.set(4, 23); overview.rowHeights.set(5, 39); overview.rowHeights.set(6, 18); overview.rowHeights.set(7, 23); overview.rowHeights.set(8, 17); overview.rowHeights.set(9, 31); overview.rowHeights.set(10, 31); overview.rowHeights.set(19, 31); overview.rowHeights.set(20, 16); overview.rowHeights.set(21, 31); overview.rowHeights.set(22, 25);
+  overview.gridlines = false; overview.dataRegion = { r1: 10, c1: 1, r2: 18, c2: 11 };
+  merge(overview, 1, 1, 1, 8); put(overview, 1, 1, 'Revenue overview', { bold: true, fontSize: 27, color: ink });
+  merge(overview, 2, 1, 2, 8); put(overview, 2, 1, 'A clear view of performance. A confident next move.', { fontSize: 12, color: muted });
+  merge(overview, 1, 9, 1, 11); put(overview, 1, 9, 'Q1 2026  /  OPERATING REVIEW', { fontSize: 10, color: green, bold: true, align: 'right' });
+  merge(overview, 2, 9, 2, 11); put(overview, 2, 9, 'ILLUSTRATIVE DEMO DATA', { fontSize: 9, color: muted, align: 'right' });
+  const cards = [
+    { start: 1, end: 3, label: 'TOTAL REVENUE', value: '=SUM(G12:G19)', format: 'currency', caption: '↑  18.6% vs. previous quarter' },
+    { start: 4, end: 6, label: 'TARGET ATTAINMENT', value: '=SUM(G12:G19)/SUM(H12:H19)', format: 'percent', caption: 'On track for a strong year' },
+    { start: 7, end: 9, label: 'REVENUE GROWTH', value: '=AVERAGE(J12:J19)', format: 'percent', caption: '↑  Across all sales channels' },
+    { start: 10, end: 11, label: 'ACTIVE CHANNELS', value: '=COUNTA(B12:B19)', format: 'integer', caption: '6 regions · 8 owners' }
+  ];
+  for (const card of cards) {
+    for (let r = 4; r <= 7; r++) { merge(overview, r, card.start, r, card.end); for (let c = card.start; c <= card.end; c++) put(overview, r, c, '', { fill }); }
+    put(overview, 4, card.start, card.label, { fill, fontSize: 10, bold: true, color: '#65806e' });
+    put(overview, 5, card.start, card.value, { fill, fontSize: 29, bold: true, color: green, align: 'left', format: card.format, decimals: card.format === 'percent' ? 1 : 0 });
+    put(overview, 7, card.start, card.caption, { fill, fontSize: 10, color: '#628c72' });
+  }
+  merge(overview, 9, 1, 9, 8); put(overview, 9, 1, 'CHANNEL PERFORMANCE', { bold: true, fontSize: 10, color: green });
+  merge(overview, 9, 9, 9, 11); put(overview, 9, 9, 'USD  ·  January — March', { fontSize: 10, align: 'right', color: '#7c8c82' });
+  const headers = ['Sales channel', 'Region', 'January', 'February', 'March', 'Q1 actual', 'Q1 target', 'Variance', 'Growth', 'Performance', 'Owner'];
+  headers.forEach((h, i) => put(overview, 10, i + 1, h, { bold: true, fontSize: 11, color: '#63816e', fill: '#eaf2ed', align: i >= 2 && i <= 8 ? 'right' : 'left', bottomBorder: '#d4e2d9' }));
+  const channels = [
+    ['Enterprise', 'North Am.', 168000, 182000, 205000, 525000, 0.242, 'Alex Morgan'],
+    ['Direct sales', 'Europe', 124000, 136000, 148000, 390000, 0.187, 'Sophie Chen'],
+    ['E-commerce', 'Global', 92000, 108000, 119000, 300000, 0.294, 'James Wilson'],
+    ['Partnerships', 'Asia Pac.', 78000, 85000, 96000, 255000, 0.162, 'Olivia Park'],
+    ['Mid-market', 'North Am.', 68000, 74000, 79000, 225000, 0.128, 'Liam Patel'],
+    ['Resellers', 'Europe', 54000, 59000, 63000, 168000, 0.143, 'Emma Davis'],
+    ['Marketplace', 'Global', 41000, 47000, 56000, 135000, 0.317, 'Noah Kim'],
+    ['Self-service', 'LatAm', 32000, 35000, 38000, 108000, 0.093, 'Mia Santos']
+  ];
+  channels.forEach((row, i) => {
+    const r = i + 11, n = r + 1, values = [row[0], row[1], row[2], row[3], row[4], `=SUM(D${n}:F${n})`, row[5], `=G${n}-H${n}`, row[6], `=IF(G${n}>=H${n},"Above target","Needs focus")`, row[7]];
+    values.forEach((v, j) => put(overview, r, j + 1, v, { fill: i % 2 ? '#f5f8f6' : '#ffffff', fontSize: j === 9 || j === 10 ? 11 : 12, color: j === 0 ? ink : '#53695c', bold: j === 0 || j === 5, format: j >= 2 && j <= 7 ? 'currency' : j === 8 ? 'percent' : 'general' }));
+  });
+  for (let c = 1; c <= 11; c++) put(overview, 19, c, c === 1 ? 'Total' : c >= 3 && c <= 8 ? `=SUM(${address(11, c)}:${address(18, c)})` : c === 9 ? '=AVERAGE(J12:J19)' : '', { fill: '#eaf3ed', color: green, bold: true, fontSize: 12, format: c === 9 ? 'percent' : c >= 3 && c <= 8 ? 'currency' : 'general', bottomBorder: '#adc9b7' });
+  overview.conditionalRules.push({ type: 'positive', range: { r1: 11, r2: 18, c1: 8, c2: 9 } });
+  overview.cells.get(keyOf(12, 6)).note = 'Revenue is calculated from the three monthly inputs. Edit any month to see dependent formulas recalculate.';
+  merge(overview, 21, 1, 21, 7); put(overview, 21, 1, 'THE QUARTER, AT A GLANCE', { bold: true, fontSize: 10, color: green });
+  merge(overview, 22, 1, 22, 11); put(overview, 22, 1, 'Enterprise continues to lead. Marketplace is our fastest-growing channel.', { fontSize: 12, color: '#718779' });
+  overview.charts.push({ id: 'chart-trend', title: 'Revenue momentum', subtitle: 'Monthly revenue · USD', type: 'column', range: { r1: 10, c1: 3, r2: 18, c2: 5 }, aggregate: true, row: 24, col: 1, width: 593, height: 230 });
+  overview.charts.push({ id: 'chart-channel', title: 'A balanced portfolio', subtitle: 'Q1 revenue by sales channel', type: 'bar', range: { r1: 10, c1: 1, r2: 18, c2: 6 }, labelColumn: 1, valueColumn: 6, row: 24, col: 7, width: 520, height: 230 });
+  const dataHeaders = ['Order ID', 'Order date', 'Channel', 'Region', 'Product', 'Units', 'Unit price', 'Revenue', 'Cost', 'Gross margin', 'Owner'];
+  dataHeaders.forEach((h, i) => put(transactions, 0, i, h, { fill: green, color: '#ffffff', bold: true, fontSize: 12 }));
+  transactions.freezeRows = 1; transactions.rowHeights.set(0, 34); transactions.colWidths.set(0, 120); transactions.colWidths.set(1, 125); transactions.colWidths.set(2, 150); transactions.colWidths.set(4, 150); transactions.colWidths.set(10, 140);
+  for (let i = 0; i < 120; i++) {
+    const r = i + 1, channel = channels[i % channels.length], units = 8 + (i * 17) % 83, price = [99, 149, 249, 499][i % 4], day = 46023 + (i * 3) % 89;
+    const values = [`ORD-${(2001 + i)}`, day, channel[0], channel[1], ['Gridline Team', 'Gridline Pro', 'Gridline Business', 'Gridline Enterprise'][i % 4], units, price, `=F${r + 1}*G${r + 1}`, `=H${r + 1}*Assumptions!$B$3`, `=(H${r + 1}-I${r + 1})/H${r + 1}`, channel[7]];
+    values.forEach((v, c) => put(transactions, r, c, v, { fill: i % 2 ? '#f4f8f5' : '#ffffff', format: c === 1 ? 'date' : c >= 6 && c <= 8 ? 'currency' : c === 9 ? 'percent' : 'general', fontSize: 12 }));
+  }
+  transactions.filters = { range: { r1: 0, c1: 0, r2: 120, c2: 10 }, criteria: {} };
+  assumptions.colWidths.set(0, 240); assumptions.colWidths.set(1, 170); assumptions.colWidths.set(2, 520); assumptions.rowHeights.set(0, 36);
+  ['MODEL ASSUMPTIONS', 'Value', 'Notes'].forEach((v, c) => put(assumptions, 0, c, v, { fill: green, color: '#ffffff', bold: true }));
+  [['Revenue growth target', '20%', 'Illustrative planning input, not a forecast.'], ['Cost of goods sold', '58%', 'Referenced by every order in the Sales data sheet.'], ['Target gross margin', '=1-B3', 'Calculated as one minus the cost ratio.'], ['Reporting currency', 'USD', 'All amounts in this demo use US dollars.'], ['Reporting period', 'Q1 2026', 'January through March.'], ['Model status', 'Demo workbook', 'All data is fictional and provided for product exploration.']].forEach((row, i) => row.forEach((v, c) => put(assumptions, i + 1, c, v, { fill: i % 2 ? '#f4f8f5' : '#ffffff', color: c === 1 ? '#1666b5' : '#53695c', format: c === 1 && i < 3 ? 'percent' : 'general' })));
+  wb.names.COST_RATIO = 'Assumptions!$B$3'; wb.engine.invalidate(); return wb;
+}
+
+return { createSampleWorkbook };
+})();
+
+// ===== io.js =====
+__modules["io"] = (() => {
+/** Local-only CSV / Gridline JSON / basic OOXML interoperability. No third-party libraries. */
+const { Workbook, Sheet, keyOf, address, parseAddress, parseRange, shiftFormula, FormulaError, rawValue } = __modules["engine"];
+function parseDelimited(text, delimiter = null) {
+  text = text.replace(/^\uFEFF/, '');
+  if (!delimiter) { const first = text.split(/\r?\n/, 1)[0]; delimiter = first.includes('\t') ? '\t' : first.split(';').length > first.split(',').length ? ';' : ','; }
+  const rows = []; let row = [], field = '', quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) { if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else quoted = false; } else field += ch; }
+    else if (ch === '"' && field === '') quoted = true;
+    else if (ch === delimiter) { row.push(field); field = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(field); rows.push(row); row = []; field = ''; }
+    else field += ch;
+  }
+  if (quoted) throw new Error('The file contains an unterminated quoted field.');
+  if (field !== '' || row.length || !rows.length) { row.push(field); rows.push(row); }
+  if (rows.reduce((n, r) => n + r.length, 0) > 200000) throw new Error('Import is limited to 200,000 cells per delimited file.');
+  return rows;
+}
+function serializeDelimited(rows, delimiter = ',') {
+  return rows.map(row => row.map(v => { const text = String(v ?? ''); return text.includes(delimiter) || /["\n\r]/.test(text) ? '"' + text.replaceAll('"', '""') + '"' : text; }).join(delimiter)).join('\r\n');
+}
+function exportCSV(workbook, sheet = workbook.activeSheet, formulas = false) {
+  const q = sheet.usedRange(); if ((q.r2 + 1) * (q.c2 + 1) > 200000) throw new Error('CSV export is limited to a 200,000-cell rectangular used range.');
+  const rows = []; for (let r = 0; r <= q.r2; r++) {
+    const row = []; for (let c = 0; c <= q.c2; c++) {
+      let value = formulas ? sheet.raw(r, c) : workbook.value(sheet, r, c);
+      if (value instanceof FormulaError) value = value.code;
+      // Neutralize spreadsheet-formula injection when exporting literal strings.
+      if (typeof value === 'string' && /^[=+\-@\t\r]/.test(value) && !formulas) value = "'" + value;
+      row.push(value ?? '');
+    } rows.push(row);
+  }
+  return '\uFEFF' + serializeDelimited(rows);
+}
+function workbookFromCSV(text, title = 'Imported workbook') {
+  const rows = parseDelimited(text), wb = new Workbook(); wb.title = title; wb.activeSheet.name = 'Imported data';
+  rows.forEach((row, r) => row.forEach((raw, c) => { if (raw !== '') wb.activeSheet.cells.set(keyOf(r, c), { raw: raw.startsWith('=') ? "'" + raw : raw, ...(r === 0 ? { style: { bold: true, fill: '#e4efe8', color: '#18694a' } } : {}) }); }));
+  wb.activeSheet.freezeRows = 1; return wb;
+}
+function downloadFile(name, data, type = 'application/octet-stream') {
+  const blob = data instanceof Blob ? data : new Blob([data], { type }); const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+const encoder = new TextEncoder(), decoder = new TextDecoder();
+const crcTable = new Uint32Array(256);
+for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; crcTable[n] = c >>> 0; }
+function crc32(bytes) { let crc = 0xffffffff; for (const b of bytes) crc = crcTable[(crc ^ b) & 255] ^ (crc >>> 8); return (crc ^ 0xffffffff) >>> 0; }
+function zipStore(files) {
+  const local = [], central = []; let offset = 0;
+  for (const [name, source] of Object.entries(files)) {
+    const path = encoder.encode(name), data = typeof source === 'string' ? encoder.encode(source) : source, crc = crc32(data);
+    const head = new Uint8Array(30 + path.length), v = new DataView(head.buffer);
+    v.setUint32(0, 0x04034b50, true); v.setUint16(4, 20, true); v.setUint16(6, 0x800, true); v.setUint16(12, 0x21, true); v.setUint32(14, crc, true); v.setUint32(18, data.length, true); v.setUint32(22, data.length, true); v.setUint16(26, path.length, true); head.set(path, 30);
+    const cd = new Uint8Array(46 + path.length), d = new DataView(cd.buffer);
+    d.setUint32(0, 0x02014b50, true); d.setUint16(4, 20, true); d.setUint16(6, 20, true); d.setUint16(8, 0x800, true); d.setUint16(14, 0x21, true); d.setUint32(16, crc, true); d.setUint32(20, data.length, true); d.setUint32(24, data.length, true); d.setUint16(28, path.length, true); d.setUint32(42, offset, true); cd.set(path, 46);
+    local.push(head, data); central.push(cd); offset += head.length + data.length;
+  }
+  const centralLength = central.reduce((n, b) => n + b.length, 0), end = new Uint8Array(22), ev = new DataView(end.buffer);
+  ev.setUint32(0, 0x06054b50, true); ev.setUint16(8, central.length, true); ev.setUint16(10, central.length, true); ev.setUint32(12, centralLength, true); ev.setUint32(16, offset, true);
+  const out = new Uint8Array(offset + centralLength + 22); let at = 0; for (const b of [...local, ...central, end]) { out.set(b, at); at += b.length; } return out;
+}
+async function unzip(buffer) {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer), v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.length > 32 * 1024 * 1024) throw new Error('XLSX import is limited to 32 MB compressed.');
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) if (v.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('Not a valid ZIP-based XLSX file.');
+  if (v.getUint16(eocd + 4, true) || v.getUint16(eocd + 6, true)) throw new Error('Multi-volume ZIP archives are not supported.');
+  const count = v.getUint16(eocd + 10, true); if (count > 4096) throw new Error('Too many XLSX parts.');
+  let pos = v.getUint32(eocd + 16, true), total = 0; const result = new Map();
+  for (let i = 0; i < count; i++) {
+    if (pos + 46 > bytes.length || v.getUint32(pos, true) !== 0x02014b50) throw new Error('Invalid ZIP directory.');
+    const flags = v.getUint16(pos + 8, true), method = v.getUint16(pos + 10, true), crc = v.getUint32(pos + 16, true), compressed = v.getUint32(pos + 20, true), size = v.getUint32(pos + 24, true), nlen = v.getUint16(pos + 28, true), extra = v.getUint16(pos + 30, true), comment = v.getUint16(pos + 32, true), local = v.getUint32(pos + 42, true);
+    total += size; if (total > 64 * 1024 * 1024 || size > 32 * 1024 * 1024) throw new Error('Expanded workbook exceeds the 64 MB limit.');
+    const name = decoder.decode(bytes.subarray(pos + 46, pos + 46 + nlen)); if (flags & 1) throw new Error('Encrypted workbooks are not supported.');
+    if (local + 30 > bytes.length || v.getUint32(local, true) !== 0x04034b50) throw new Error('Invalid ZIP entry.');
+    const dataStart = local + 30 + v.getUint16(local + 26, true) + v.getUint16(local + 28, true);
+    if (dataStart + compressed > bytes.length) throw new Error('Truncated ZIP entry.');
+    let data = bytes.slice(dataStart, dataStart + compressed);
+    if (method === 8) {
+      if (typeof DecompressionStream === 'undefined') throw new Error('This browser does not provide the native decompressor required to open XLSX files.');
+      const reader = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader(); const chunks = []; let read = 0;
+      while (true) { const { done, value } = await reader.read(); if (done) break; read += value.length; if (read > size || read > 32 * 1024 * 1024) { await reader.cancel(); throw new Error('ZIP decompression limit exceeded.'); } chunks.push(value); }
+      data = new Uint8Array(read); let offset = 0; for (const chunk of chunks) { data.set(chunk, offset); offset += chunk.length; }
+    } else if (method !== 0) throw new Error(`Unsupported ZIP compression method: ${method}.`);
+    if (data.length !== size || crc32(data) !== crc) throw new Error('Workbook ZIP integrity check failed.');
+    if (!name.split('/').includes('..')) result.set(name.replace(/^\//, ''), data);
+    pos += 46 + nlen + extra + comment;
+  }
+  return result;
+}
+const escapeXML = s => String(s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
+const xmlHeader = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+const spreadsheetNS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+const relationshipNS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+const packageRelNS = 'http://schemas.openxmlformats.org/package/2006/relationships';
+const colorARGB = color => 'FF' + (color || '#000000').replace('#', '').toUpperCase();
+function styleTable(workbook) {
+  const styles = [{}], ids = new Map([['{}', 0]]);
+  const idFor = style => { const normalized = Object.fromEntries(Object.entries(style ?? {}).filter(([, v]) => v !== undefined).sort(([a], [b]) => a.localeCompare(b))); const key = JSON.stringify(normalized); if (!ids.has(key)) { ids.set(key, styles.length); styles.push(normalized); } return ids.get(key); };
+  for (const sheet of workbook.sheets) for (const cell of sheet.cells.values()) idFor(cell.style);
+  const formats = new Map(), fonts = [], fills = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'], xfs = [];
+  styles.forEach((s, i) => {
+    const size = (s.fontSize ?? 13) * 0.75; fonts.push(`<font>${s.bold ? '<b/>' : ''}${s.italic ? '<i/>' : ''}${s.underline ? '<u/>' : ''}<sz val="${size}"/><color rgb="${colorARGB(s.color || '#293b32')}"/><name val="${escapeXML(s.fontFamily?.split(',')[0] || 'Aptos')}"/></font>`);
+    let fillId = 0; if (s.fill) { fillId = fills.length; fills.push(`<fill><patternFill patternType="solid"><fgColor rgb="${colorARGB(s.fill)}"/><bgColor indexed="64"/></patternFill></fill>`); }
+    let fmt = s.format || 'general'; const d = Math.max(0, Math.min(10, s.decimals ?? (fmt === 'percent' ? 1 : fmt === 'number' ? 2 : 0))), decimals = d ? '.' + '0'.repeat(d) : '';
+    fmt = fmt === 'general' ? 'General' : fmt === 'currency' ? '$#,##0' + decimals : fmt === 'percent' ? '0' + decimals + '%' : fmt === 'integer' ? '#,##0' : fmt === 'number' ? '#,##0' + decimals : fmt === 'date' ? 'mmm d, yyyy' : fmt;
+    let numFmtId = 0; if (fmt !== 'General') { if (!formats.has(fmt)) formats.set(fmt, 164 + formats.size); numFmtId = formats.get(fmt); }
+    xfs.push(`<xf numFmtId="${numFmtId}" fontId="${i}" fillId="${fillId}" borderId="${s.border ? 1 : 0}" xfId="0" applyFont="1" applyFill="1" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center"${s.align ? ` horizontal="${s.align}"` : ''}${s.wrap ? ' wrapText="1"' : ''}/></xf>`);
+  });
+  const xml = xmlHeader + `<styleSheet xmlns="${spreadsheetNS}"><numFmts count="${formats.size}">${[...formats].map(([code, id]) => `<numFmt numFmtId="${id}" formatCode="${escapeXML(code)}"/>`).join('')}</numFmts><fonts count="${fonts.length}">${fonts.join('')}</fonts><fills count="${fills.length}">${fills.join('')}</fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border>${['left','right','top','bottom'].map(x => `<${x} style="thin"><color rgb="FFD4DFD8"/></${x}>`).join('')}<diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${xfs.length}">${xfs.join('')}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+  return { xml, idFor };
+}
+function exportXLSX(workbook) {
+  const files = {}, styles = styleTable(workbook);
+  files['[Content_Types].xml'] = xmlHeader + `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${workbook.sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`;
+  files['_rels/.rels'] = xmlHeader + `<Relationships xmlns="${packageRelNS}"><Relationship Id="rId1" Type="${relationshipNS}/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
+  files['xl/workbook.xml'] = xmlHeader + `<workbook xmlns="${spreadsheetNS}" xmlns:r="${relationshipNS}"><bookViews><workbookView activeTab="${Math.max(0, workbook.sheets.findIndex(s => s.id === workbook.activeSheetId))}"/></bookViews><sheets>${workbook.sheets.map((s, i) => `<sheet name="${escapeXML(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets>${Object.keys(workbook.names).length ? '<definedNames>' + Object.entries(workbook.names).map(([n, v]) => `<definedName name="${escapeXML(n)}">${escapeXML(v)}</definedName>`).join('') + '</definedNames>' : ''}<calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>`;
+  files['xl/_rels/workbook.xml.rels'] = xmlHeader + `<Relationships xmlns="${packageRelNS}">${workbook.sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="${relationshipNS}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${workbook.sheets.length + 1}" Type="${relationshipNS}/styles" Target="styles.xml"/></Relationships>`;
+  files['xl/styles.xml'] = styles.xml;
+  workbook.sheets.forEach((sheet, i) => {
+    const rows = new Map();
+    for (const [key, cell] of sheet.cells) {
+      const [r, c] = key.split(',').map(Number); if (!rows.has(r)) rows.set(r, []);
+      const ref = address(r, c), sid = styles.idFor(cell.style), val = workbook.value(sheet, r, c), formula = cell.raw.startsWith('=') ? `<f>${escapeXML(cell.raw.slice(1))}</f>` : '';
+      let type = '', content = '';
+      if (val instanceof FormulaError) { type = ' t="e"'; content = `<v>${escapeXML(val.code)}</v>`; }
+      else if (typeof val === 'number') content = `<v>${val}</v>`;
+      else if (typeof val === 'boolean') { type = ' t="b"'; content = `<v>${+val}</v>`; }
+      else if (formula) { type = ' t="str"'; content = `<v>${escapeXML(val ?? '')}</v>`; }
+      else if (val !== null && val !== undefined) { type = ' t="inlineStr"'; content = `<is><t xml:space="preserve">${escapeXML(val)}</t></is>`; }
+      rows.get(r).push({ c, xml: `<c r="${ref}" s="${sid}"${type}>${formula}${content}</c>` });
+    }
+    for (const [r] of sheet.rowHeights) if (!rows.has(r)) rows.set(r, []);
+    const rowXML = [...rows].sort(([a], [b]) => a - b).map(([r, cells]) => `<row r="${r + 1}"${sheet.rowHeights.has(r) ? ` ht="${sheet.rowHeights.get(r) * 0.75}" customHeight="1"` : ''}${sheet.hiddenRows.has(r) ? ' hidden="1"' : ''}>${cells.sort((a, b) => a.c - b.c).map(c => c.xml).join('')}</row>`).join('');
+    const pane = sheet.freezeRows || sheet.freezeCols ? `<pane xSplit="${sheet.freezeCols}" ySplit="${sheet.freezeRows}" topLeftCell="${address(sheet.freezeRows, sheet.freezeCols)}" activePane="${sheet.freezeRows && sheet.freezeCols ? 'bottomRight' : sheet.freezeRows ? 'bottomLeft' : 'topRight'}" state="frozen"/>` : '';
+    files[`xl/worksheets/sheet${i + 1}.xml`] = xmlHeader + `<worksheet xmlns="${spreadsheetNS}"><dimension ref="A1:${address(sheet.usedRange().r2, sheet.usedRange().c2)}"/><sheetViews><sheetView workbookViewId="0" showGridLines="${sheet.gridlines ? 1 : 0}">${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="20.25"/>${sheet.colWidths.size ? '<cols>' + [...sheet.colWidths].map(([c, w]) => `<col min="${c + 1}" max="${c + 1}" width="${Math.max(1, (w - 5) / 7)}" customWidth="1"/>`).join('') + '</cols>' : ''}<sheetData>${rowXML}</sheetData>${sheet.filters ? `<autoFilter ref="${address(sheet.filters.range.r1, sheet.filters.range.c1)}:${address(sheet.filters.range.r2, sheet.filters.range.c2)}"/>` : ''}${sheet.merges.length ? `<mergeCells count="${sheet.merges.length}">${sheet.merges.map(m => `<mergeCell ref="${address(m.r1, m.c1)}:${address(m.r2, m.c2)}"/>`).join('')}</mergeCells>` : ''}<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`;
+  });
+  return zipStore(files);
+}
+function readXML(bytes) {
+  if (!bytes) throw new Error('The workbook is missing a required XML part.'); const source = decoder.decode(bytes);
+  if (/<!DOCTYPE|<!ENTITY/i.test(source)) throw new Error('DTD declarations are not allowed in workbook XML.');
+  const doc = new DOMParser().parseFromString(source, 'application/xml'); if (doc.getElementsByTagName('parsererror').length) throw new Error('Malformed workbook XML.'); return doc;
+}
+const elements = (node, name) => [...node.getElementsByTagNameNS('*', name)];
+const firstElement = (node, name) => elements(node, name)[0];
+const builtinFormats = { 0: 'general', 1: 'integer', 2: 'number', 3: 'integer', 4: 'number', 9: '0%', 10: '0.00%', 14: 'date', 15: 'date', 16: 'date', 17: 'date', 22: 'date', 44: 'currency' };
+async function importXLSX(buffer, title = 'Imported workbook') {
+  const parts = await unzip(buffer), workbookDoc = readXML(parts.get('xl/workbook.xml')), relsDoc = readXML(parts.get('xl/_rels/workbook.xml.rels'));
+  const dateSystem = firstElement(workbookDoc, 'workbookPr')?.getAttribute('date1904');
+  if (dateSystem === '1' || dateSystem === 'true') throw new Error('Workbooks using the 1904 date system are not supported. Convert the workbook to the 1900 date system before importing.');
+  const relationships = new Map(elements(relsDoc, 'Relationship').filter(e => e.getAttribute('TargetMode') !== 'External').map(e => [e.getAttribute('Id'), e.getAttribute('Target')]));
+  const pathFor = target => target.startsWith('/') ? target.slice(1) : 'xl/' + target.replace(/^\.\//, '');
+  const warnings = ['XLSX import supports cell values, formulas, basic styles, dimensions, merged cells and frozen panes. Charts, pivots, macros, advanced formatting and external links are not imported.'];
+  let strings = [], styles = [{}];
+  const sharedPath = [...relationships.values()].find(x => x.endsWith('sharedStrings.xml'));
+  if (sharedPath && parts.has(pathFor(sharedPath))) strings = elements(readXML(parts.get(pathFor(sharedPath))), 'si').map(si => elements(si, 't').map(t => t.textContent).join(''));
+  const stylePath = [...relationships.values()].find(x => x.endsWith('styles.xml'));
+  if (stylePath && parts.has(pathFor(stylePath))) {
+    const doc = readXML(parts.get(pathFor(stylePath))), formats = new Map(elements(doc, 'numFmt').map(e => [+e.getAttribute('numFmtId'), e.getAttribute('formatCode')]));
+    const fonts = [...(firstElement(doc, 'fonts')?.children ?? [])], fills = [...(firstElement(doc, 'fills')?.children ?? [])], xfs = [...(firstElement(doc, 'cellXfs')?.children ?? [])];
+    const cssColor = el => { const rgb = el?.getAttribute('rgb'); return rgb ? '#' + rgb.slice(-6) : undefined; };
+    styles = xfs.map(xf => {
+      const font = fonts[+xf.getAttribute('fontId')], fill = fills[+xf.getAttribute('fillId')], alignment = firstElement(xf, 'alignment'), id = +xf.getAttribute('numFmtId');
+      const style = { format: formats.get(id) || builtinFormats[id] || 'general' };
+      if (font) { style.bold = !!firstElement(font, 'b'); style.italic = !!firstElement(font, 'i'); style.underline = !!firstElement(font, 'u'); const fs = firstElement(font, 'sz')?.getAttribute('val'); if (fs) style.fontSize = Math.min(72, +fs / 0.75); const color = cssColor(firstElement(font, 'color')); if (color) style.color = color; }
+      const color = fill ? cssColor(firstElement(fill, 'fgColor')) : null; if (color && firstElement(fill, 'patternFill')?.getAttribute('patternType') === 'solid') style.fill = color;
+      if (alignment) { const a = alignment.getAttribute('horizontal'); if (['left', 'center', 'right'].includes(a)) style.align = a; style.wrap = alignment.getAttribute('wrapText') === '1'; }
+      if (+xf.getAttribute('borderId') > 0) style.border = true;
+      return style;
+    });
+  }
+  const wb = new Workbook(); wb.title = title; wb.sheets = []; let count = 0;
+  for (const node of elements(workbookDoc, 'sheet')) {
+    if (wb.sheets.length >= 256) throw new Error('Too many worksheets.');
+    const id = node.getAttributeNS(relationshipNS, 'id') || node.getAttribute('r:id'), target = relationships.get(id); if (!target) continue;
+    const doc = readXML(parts.get(pathFor(target))), sheet = new Sheet(node.getAttribute('name') || 'Sheet'), shared = new Map();
+    for (const cell of elements(doc, 'c')) {
+      if (++count > 200000) throw new Error('XLSX import is limited to 200,000 populated cells.');
+      const ref = parseAddress(cell.getAttribute('r')); if (!ref) continue;
+      const type = cell.getAttribute('t'), v = firstElement(cell, 'v')?.textContent ?? '', f = firstElement(cell, 'f'); let raw = v;
+      if (f) {
+        if (f.getAttribute('t') === 'shared') {
+          const si = f.getAttribute('si'); if (f.textContent) { raw = '=' + f.textContent; shared.set(si, { raw, ...ref }); }
+          else if (shared.has(si)) { const base = shared.get(si); raw = shiftFormula(base.raw, ref.r - base.r, ref.c - base.c); }
+          else { raw = v; warnings.push(`Unresolved shared formula at ${sheet.name}!${cell.getAttribute('r')}; used cached value.`); }
+        } else raw = '=' + f.textContent;
+      } else if (type === 's') raw = "'" + (strings[+v] ?? '');
+      else if (type === 'inlineStr') raw = "'" + elements(firstElement(cell, 'is') || cell, 't').map(t => t.textContent).join('');
+      else if (type === 'str') raw = "'" + v;
+      else if (type === 'b') raw = v === '1' ? 'TRUE' : 'FALSE';
+      sheet.cells.set(keyOf(ref.r, ref.c), { raw, style: structuredClone(styles[+cell.getAttribute('s')] || {}) });
+    }
+    for (const row of elements(doc, 'row')) { const r = +row.getAttribute('r') - 1; if (row.hasAttribute('ht')) sheet.rowHeights.set(r, Math.max(16, Math.min(400, +row.getAttribute('ht') / 0.75))); if (row.getAttribute('hidden') === '1') sheet.hiddenRows.add(r); }
+    for (const col of elements(doc, 'col')) { const min = +col.getAttribute('min') - 1, max = Math.min(16383, +col.getAttribute('max') - 1), width = +col.getAttribute('width') * 7 + 5; for (let c = Math.max(0, min); c <= max; c++) if (width) sheet.colWidths.set(c, Math.max(26, Math.min(1200, width))); }
+    for (const cell of elements(doc, 'mergeCell')) { const q = parseRange(cell.getAttribute('ref')); if (q) sheet.merges.push(q); }
+    const pane = firstElement(doc, 'pane'); if (pane?.getAttribute('state') === 'frozen') { sheet.freezeRows = Math.min(1000, +pane.getAttribute('ySplit') || 0); sheet.freezeCols = Math.min(100, +pane.getAttribute('xSplit') || 0); }
+    const view = firstElement(doc, 'sheetView'); sheet.gridlines = view?.getAttribute('showGridLines') !== '0';
+    const filter = firstElement(doc, 'autoFilter'), range = filter && parseRange(filter.getAttribute('ref')); if (range) sheet.filters = { range, criteria: {} };
+    wb.sheets.push(sheet);
+  }
+  if (!wb.sheets.length) throw new Error('No readable worksheets were found.');
+  for (const name of elements(workbookDoc, 'definedName')) { const key = name.getAttribute('name'); if (!key.startsWith('_xlnm.')) wb.names[key.toUpperCase()] = name.textContent; }
+  const active = +firstElement(workbookDoc, 'workbookView')?.getAttribute('activeTab') || 0; wb.activeSheetId = (wb.sheets[active] || wb.sheets[0]).id;
+  return { workbook: wb, warnings };
+}
+
+return { parseDelimited, serializeDelimited, exportCSV, workbookFromCSV, downloadFile, zipStore, unzip, exportXLSX, importXLSX };
+})();
+
+// ===== app.js =====
+__modules["app"] = (() => {
+const { Workbook, MAX_ROWS, MAX_COLS, MAX_RANGE_CELLS, FUNCTIONS, FormulaError, address, parseAddress, parseRange, normalizedRange, rangeAddress, cellsIn, keyOf, shiftFormula, formatValue, colName } = __modules["engine"];
+const { GridRenderer } = __modules["renderer"];
+const { createSampleWorkbook } = __modules["sample"];
+const { parseDelimited, serializeDelimited, exportCSV, workbookFromCSV, downloadFile, exportXLSX, importXLSX } = __modules["io"];
+const $ = selector => document.querySelector(selector);
+const $$ = selector => [...document.querySelectorAll(selector)];
+const escapeHTML = s => String(s ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+const ICONS = {
+  undo: '<path d="M8 5 3 10l5 5M3 10h10a6 6 0 0 1 0 12" transform="translate(0 -2)"/>', redo: '<path d="m16 3 5 5-5 5M21 8H11a6 6 0 0 0 0 12"/>',
+  search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>', edit: '<path d="m15 4 5 5M4 20l5-1L21 7a2.1 2.1 0 0 0-4-4L5 15z"/>',
+  comment: '<path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-5 3v-3H4a2 2 0 0 1-2-2V6a2 2 0 0 1 3-2Z"/><path d="M7 9h10M7 13h7"/>',
+  export: '<path d="M12 15V3m-4 4 4-4 4 4M4 13v7h16v-7"/>', paste: '<rect x="5" y="5" width="14" height="16" rx="2"/><rect x="9" y="2" width="6" height="5" rx="1"/><path d="M9 12h6m-6 4h6"/>',
+  copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v13h5"/>', cut: '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="m8 8 12 12M8 16 20 4"/>',
+  paint: '<path d="M4 3h16v6H4zM8 9v3h8v3h-4v6"/>', border: '<rect x="4" y="4" width="16" height="16"/><path d="M4 12h16M12 4v16" stroke-dasharray="2 2"/>', fill: '<path d="m4 11 8-8 9 9-8 8zM4 11h17M8 2l6 6M4 19c-3 4 2 4 0 0"/>',
+  alignLeft: '<path d="M4 5h16M4 10h11M4 15h16M4 20h11"/>', alignCenter: '<path d="M4 5h16M7 10h10M4 15h16M7 20h10"/>', alignRight: '<path d="M4 5h16M9 10h11M4 15h16M9 20h11"/>',
+  wrap: '<path d="M3 5h18M3 10h14a4 4 0 0 1 0 8h-4m2-3-3 3 3 3M3 16h5"/>', merge: '<rect x="3" y="5" width="18" height="14"/><path d="M8 9v6M16 9v6m-6-3h4"/>',
+  table: '<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 9h18M3 14h18M9 9v11M15 9v11"/>', conditional: '<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 10h18M9 4v16M15 4v16"/><path d="M4 15h4" stroke="#d8ad46" stroke-width="3"/>',
+  insert: '<rect x="3" y="8" width="18" height="12"/><path d="M3 14h18M9 8v12M15 8v12M8 3h8m-4-3v6"/>', delete: '<rect x="3" y="8" width="18" height="12"/><path d="M3 14h18M9 8v12M15 8v12M8 3h8"/>',
+  sort: '<path d="M8 4v16m-4-4 4 4 4-4M15 5h6m-6 5h4m-4 5h2"/>', filter: '<path d="M3 4h18l-7 8v7l-4 2v-9z"/>', grid: '<rect x="3" y="3" width="18" height="18" rx="1"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>',
+  moon: '<path d="M20 15A9 9 0 0 1 9 4a9 9 0 1 0 11 11Z"/>', list: '<path d="M7 5h14M7 12h14M7 19h14M3 5h.1M3 12h.1M3 19h.1"/>',
+  chart: '<path d="M3 3v18h18M7 17V9h3v8M13 17V4h3v13M19 17v-6h3v6"/>', line: '<path d="M3 3v18h18M6 16l5-7 5 3 5-8"/>', donut: '<path d="M12 3a9 9 0 1 0 9 9h-9Z"/><path d="M15 2v7h7a8 8 0 0 0-7-7Z"/>',
+  file: '<path d="M5 2h9l5 5v15H5zM14 2v6h5M8 12h8M8 16h8"/>', open: '<path d="M3 7V4h7l3 3h8v12H3V7m0 4h18"/>', save: '<path d="M3 3h15l3 3v15H3zM7 3v6h9V3M7 21v-8h10v8"/>',
+  plus: '<path d="M12 4v16M4 12h16"/>', freeze: '<rect x="3" y="3" width="18" height="18" rx="1"/><path d="M3 9h18M9 3v18" stroke-width="2.5"/>', print: '<path d="M7 8V3h10v5M7 17H3V8h18v9h-4M7 13h10v8H7zM17 11h1"/>',
+  sum: '<path d="M19 4H5l7 8-7 8h14"/>', function: '<path d="M17 4c-4-4-6 1-7 7l-2 7c-1 4-4 4-5 1M6 10h10m1 4 5 7m0-7-5 7"/>',
+  check: '<path d="m4 12 5 5L20 6"/>', clear: '<path d="m9 3 12 10-8 8H7l-6-6ZM5 11l10 9"/>', lock: '<rect x="4" y="10" width="16" height="12" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4M12 15v3"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/>', refresh: '<path d="M20 5v6h-6M4 19v-6h6M20 11a8 8 0 0 0-14-6M4 13a8 8 0 0 0 14 6"/>',
+  name: '<path d="M3 5h18v14H3zM7 15l3-7 3 7m-5-2h4m4-5v7"/>', percent: '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="m4 20 16-16"/>'
+};
+function icon(name, large = false) { return `<svg class="icon${large ? ' large' : ''}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ICONS.grid}</svg>`; }
+function hydrateIcons(root = document) { root.querySelectorAll('[data-icon]').forEach(el => { el.innerHTML = icon(el.dataset.icon); }); }
+const tool = (action, label, image, large = false, more = false) => `<button class="${large ? 'big-tool' : 'small-tool'}" data-action="${action}" title="${escapeHTML(label)}">${icon(image, large)}<span>${label}</span>${more ? '<span class="chevron">⌄</span>' : ''}</button>`;
+const mini = (action, image, title, content = '') => `<button class="mini-tool" data-action="${action}" title="${escapeHTML(title)}" aria-label="${escapeHTML(title)}">${content || icon(image)}</button>`;
+const group = (label, content, extra = '') => `<div class="ribbon-group ${extra}"><div class="group-content">${content}</div><div class="group-label">${label}</div></div>`;
+const STORAGE_KEY = 'gridline.workbook.v1';
+const COMMANDS = [
+  ['new','New workbook','file','Ctrl/⌘ N'],['open','Open workbook','open','Ctrl/⌘ O'],['save','Save Gridline workbook','save','Ctrl/⌘ S'],['export-xlsx','Export Excel workbook (.xlsx)','export',''],['export-csv','Export current sheet as CSV','export',''],
+  ['find','Find and replace','search','Ctrl/⌘ F'],['chart','Insert chart','chart',''],['functions','Insert function','function',''],['name-manager','Named ranges','name',''],['sort','Sort range','sort',''],['filter','Filter values','filter',''],['conditional','Conditional formatting','conditional',''],['format-table','Format as table','table',''],['freeze-top','Freeze top row','freeze',''],['freeze-first','Freeze first column','freeze',''],['freeze','Freeze at active cell','freeze',''],['unfreeze','Unfreeze panes','freeze',''],['toggle-gridlines','Toggle gridlines','grid',''],['show-formulas','Show formulas','function','Ctrl/⌘ `'],['add-note','Add a cell note','comment',''],['notes','View notes','comment',''],['insert-row','Insert row','insert',''],['insert-column','Insert column','insert',''],['delete-row','Delete row','delete',''],['delete-column','Delete column','delete',''],['add-sheet','Add worksheet','plus',''],['duplicate-sheet','Duplicate worksheet','copy',''],['theme','Toggle dark mode','moon',''],['recalculate','Recalculate workbook','refresh',''],['performance','Renderer diagnostics','grid',''],['print','Print worksheet','print','Ctrl/⌘ P'],['help','Keyboard shortcuts','info','F1']
+];
+class GridlineApp {
+  constructor() {
+    this.active = { r: 12, c: 6 }; this.anchor = { ...this.active }; this.selection = normalizedRange(this.active); this.tab = 'Home'; this.autosave = true; this.clipboard = null; this.editing = false; this.barEditing = false; this.sheetViews = new Map(); this.chartRevision = -1; this.panelType = null;
+    this.host = $('#grid-host'); this.editor = $('#cell-editor'); this.formulaInput = $('#formula-input'); this.dialog = $('#dialog'); this.drag = null; this.composing = false;
+    let workbook; const params = new URLSearchParams(location.search);
+    try { const saved = !params.has('fresh') && localStorage.getItem(STORAGE_KEY); if (saved) workbook = Workbook.fromJSON(JSON.parse(saved)); } catch (e) { console.warn('Gridline restore:', e); }
+    this.workbook = workbook || createSampleWorkbook();
+    this.renderer = new GridRenderer(this.host, this.workbook, (backend, reason) => { $('#backend-label').textContent = backend === 'webgpu' ? 'WebGPU accelerated' : 'Canvas2D fallback'; $('#renderer-status').title = reason || 'GPU-instanced grid and glyph atlas'; });
+    this.renderer.onFrame = () => { this.positionEditor(); this.positionCharts(); this.updateScrollbars(); if (this.panelType === 'performance') this.refreshPerformance(); };
+    this.observeWorkbook(); this.bindEvents(); this.renderRibbon(); this.renderTabs(); this.updateUI(); hydrateIcons(); this.renderCharts();
+    this.renderer.initialize(params.get('renderer') === 'canvas').then(() => { $('#loading').remove(); this.select(this.selection, this.active, false); this.host.focus(); this.ready = true; window.dispatchEvent(new Event('gridline-ready')); });
+  }
+  get sheet() { return this.workbook.activeSheet; }
+  observeWorkbook() {
+    this.unsubscribe?.(); this.unsubscribe = this.workbook.onChange(() => {
+      this.renderer.workbook = this.workbook; this.renderer.syncLayout(); this.updateUI(); this.renderTabs(); this.renderCharts();
+      if (this.panelType === 'notes') this.showNotes();
+      $('#save-status').textContent = this.autosave ? 'Saving locally…' : 'Autosave is off';
+      clearTimeout(this.saveTimer); if (this.autosave) this.saveTimer = setTimeout(() => this.persist(), 650);
+    });
+  }
+  persist() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.workbook.toJSON())); $('#save-status').textContent = 'Saved on this device'; return true; }
+    catch { $('#save-status').textContent = 'Local storage full — export to save'; this.toast('Local storage is unavailable or full. Export a .gridline file to save your workbook.', true); return false; }
+  }
+  setWorkbook(workbook) {
+    this.commitEdit(false); this.workbook = workbook; this.renderer.workbook = workbook; this.renderer.scrollX = this.renderer.scrollY = 0; this.sheetViews.clear(); this.clipboard = null; this.renderer.copyRange = null; this.observeWorkbook(); this.renderer.syncLayout(); this.select(normalizedRange({ r: 0, c: 0 }), { r: 0, c: 0 }, false); this.closePanel(); this.renderTabs(); this.renderCharts(); this.updateUI(); this.persist(); this.host.focus();
+  }
+  updateUI() {
+    $('#workbook-title').value = this.workbook.title; document.title = `${this.workbook.title} — Gridline`;
+    $('#name-box').value = rangeAddress(this.selection);
+    if (!this.editing && !this.barEditing) this.formulaInput.value = this.sheet.raw(this.active.r, this.active.c);
+    this.renderer.selection = this.selection; this.renderer.active = this.active;
+    const style = this.sheet.get(this.active.r, this.active.c)?.style || {};
+    for (const prop of ['bold', 'italic', 'underline', 'wrap']) $$(`[data-action="${prop}"]`).forEach(b => b.classList.toggle('active', !!style[prop]));
+    for (const align of ['left', 'center', 'right']) $$(`[data-action="align-${align}"]`).forEach(b => b.classList.toggle('active', style.align === align));
+    const format = $('#number-format'); if (format) format.value = ['general','number','currency','percent','date','integer'].includes(style.format) ? style.format : 'general';
+    const size = $('#font-size'); if (size) size.value = Math.round((style.fontSize || 13) * 0.75);
+    $$('[data-action="undo"]').forEach(b => b.disabled = !this.workbook.undoStack.length); $$('[data-action="redo"]').forEach(b => b.disabled = !this.workbook.redoStack.length);
+    const text = this.workbook.display(this.sheet, this.active.r, this.active.c), formula = this.sheet.raw(this.active.r, this.active.c);
+    $('#active-cell-description').textContent = `${this.sheet.name}. ${address(this.active.r, this.active.c)}. ${text}${formula.startsWith('=') ? '. Formula ' + formula : ''}`;
+    $('#active-cell-description').setAttribute('aria-rowindex', String(this.active.r + 1)); $('#active-cell-description').setAttribute('aria-colindex', String(this.active.c + 1));
+    $('#mode-status').textContent = this.sheet.protected ? 'Read-only sheet' : this.editing || this.barEditing ? 'Edit' : 'Ready';
+    let count = 0, numbers = 0, total = 0;
+    for (const [key, cell] of this.sheet.cells) {
+      const [r, c] = key.split(',').map(Number); const q = this.selection;
+      if (r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2 && cell.raw) { const v = this.workbook.value(this.sheet, r, c); count++; if (typeof v === 'number') { total += v; numbers++; } }
+    }
+    $('#selection-stats').innerHTML = count > 1 ? `${numbers ? `<span>Average: <b>${escapeHTML(formatValue(total / numbers, { format: 'number' }))}</b></span>` : ''}<span>Count: <b>${count.toLocaleString()}</b></span>${numbers ? `<span>Sum: <b>${escapeHTML(formatValue(total, { format: 'number' }))}</b></span>` : ''}` : '';
+    this.renderer.requestFrame();
+  }
+  select(q, active = { r: q.r1, c: q.c1 }, reveal = false) {
+    q = { r1: Math.max(0, Math.min(MAX_ROWS - 1, q.r1)), r2: Math.max(0, Math.min(MAX_ROWS - 1, q.r2)), c1: Math.max(0, Math.min(MAX_COLS - 1, q.c1)), c2: Math.max(0, Math.min(MAX_COLS - 1, q.c2)) };
+    const merged = q.r1 === q.r2 && q.c1 === q.c2 && this.sheet.mergeAt(q.r1, q.c1); if (merged) q = { ...merged };
+    this.selection = q; this.active = { r: Math.max(0, Math.min(MAX_ROWS - 1, active.r)), c: Math.max(0, Math.min(MAX_COLS - 1, active.c)) }; this.updateUI(); if (reveal) this.renderer.ensureVisible(this.active.r, this.active.c);
+  }
+  goto(r, c, extend = false) { r = Math.max(0, Math.min(MAX_ROWS - 1, r)); c = Math.max(0, Math.min(MAX_COLS - 1, c)); const p = { r, c }; if (!extend) this.anchor = p; this.select(extend ? normalizedRange(this.anchor, p) : normalizedRange(p), p, true); }
+  errorBoundary(fn) { try { const value = fn(); if (value instanceof Promise) value.catch(e => this.toast(e.message, true)); return value; } catch (e) { this.toast(e.message, true); console.error(e); } }
+  toast(message, error = false) { const t = $('#toast'); t.textContent = message; t.hidden = false; t.classList.toggle('error', error); clearTimeout(this.toastTimer); this.toastTimer = setTimeout(() => t.hidden = true, error ? 6500 : 3500); }
+  editable() { if (this.sheet.protected) { this.toast('This sheet is read-only. Turn off sheet protection from Review to edit.', true); return false; } return true; }
+  bindEvents() {
+    document.addEventListener('click', e => {
+      const tab = e.target.closest('[data-tab]'); if (tab) { this.tab = tab.dataset.tab; this.renderRibbon(); return; }
+      const action = e.target.closest('[data-action]'); if (action && !action.disabled) this.errorBoundary(() => this.run(action.dataset.action, action));
+      const sheetTab = e.target.closest('[data-sheet]'); if (sheetTab) this.switchSheet(sheetTab.dataset.sheet);
+    });
+    document.addEventListener('pointerdown', e => {
+      if (!e.target.closest('#context-menu')) $('#context-menu').hidden = true;
+      if (this.editing && !e.target.closest('#grid-host') && !e.target.closest('#formula-input') && !e.target.closest('.formula-control')) this.commitEdit(false);
+      if (e.target.closest('.ribbon button,.formula-control,.fx') && !e.target.closest('select,input')) e.preventDefault();
+    });
+    document.addEventListener('keydown', e => this.onKey(e));
+    this.host.addEventListener('pointerdown', e => this.onPointerDown(e));
+    this.host.addEventListener('pointermove', e => this.onPointerMove(e));
+    this.host.addEventListener('pointerup', e => this.onPointerUp(e));
+    this.host.addEventListener('pointercancel', e => this.onPointerUp(e));
+    this.host.addEventListener('dblclick', e => { if (e.target.closest('.chart-card,.scroll-thumb,.cell-editor')) return; const p = this.localPoint(e), hit = this.renderer.hitTest(p.x, p.y); if (hit.colHeader) this.autoFit(hit.c); else if (!hit.rowHeader) this.startEdit(); });
+    this.host.addEventListener('contextmenu', e => { if (e.target.closest('.cell-editor')) return; e.preventDefault(); const p = this.localPoint(e), hit = this.renderer.hitTest(p.x, p.y); if (hit.r < this.selection.r1 || hit.r > this.selection.r2 || hit.c < this.selection.c1 || hit.c > this.selection.c2) this.goto(hit.r, hit.c); this.cellContextMenu(e.clientX, e.clientY); });
+    this.host.addEventListener('wheel', e => { e.preventDefault(); if (this.editing) this.commitEdit(false); if (e.ctrlKey || e.metaKey) this.setZoom(this.renderer.zoom + (e.deltaY > 0 ? -.1 : .1)); else { const unit = e.deltaMode === 1 ? 25 : e.deltaMode === 2 ? this.renderer.height : 1; this.renderer.scrollY += e.shiftKey ? 0 : e.deltaY * unit; this.renderer.scrollX += e.shiftKey ? e.deltaY * unit : e.deltaX * unit; this.renderer.clampScroll(); this.renderer.requestFrame(); } }, { passive: false });
+    this.editor.addEventListener('compositionstart', () => this.composing = true); this.editor.addEventListener('compositionend', () => this.composing = false);
+    this.editor.addEventListener('input', () => { this.formulaInput.value = this.editor.value; this.showFormulaSuggestions(this.editor); });
+    this.formulaInput.addEventListener('focus', () => { if (this.editing) { this.formulaInput.value = this.editor.value; this.editing = false; this.editor.hidden = true; } this.barEditing = true; $('#mode-status').textContent = 'Edit'; });
+    this.formulaInput.addEventListener('input', () => this.showFormulaSuggestions(this.formulaInput));
+    this.formulaInput.addEventListener('blur', () => { setTimeout(() => { if (this.barEditing && document.activeElement !== this.formulaInput && !this.drag?.reference) this.commitFormula(); }, 0); });
+    $('#name-box').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); const value = e.target.value.trim(), named = this.workbook.names[value.toUpperCase()]; let q = parseRange(value); if (!q && named) { const parts = named.split('!'); const name = parts[0].replace(/^'|'$/g, '').replaceAll("''", "'"); const sheet = this.workbook.sheetByName(name); if (sheet) { this.switchSheet(sheet.id); q = parseRange(parts[1]); } } if (q) { this.anchor = { r: q.r1, c: q.c1 }; this.select(q, this.anchor, true); this.host.focus(); } else this.toast('Enter a cell or range, for example A1, B2:F20, or a defined name.', true); } });
+    $('#workbook-title').addEventListener('change', e => this.workbook.mutate('Rename workbook', () => this.workbook.title = e.target.value.trim().slice(0, 200) || 'Untitled workbook'));
+    $('#zoom-slider').addEventListener('input', e => this.setZoom(+e.target.value / 100));
+    $('#fill-picker').addEventListener('input', e => this.errorBoundary(() => this.format({ fill: e.target.value })));
+    $('#text-picker').addEventListener('input', e => this.errorBoundary(() => this.format({ color: e.target.value })));
+    $('#file-input').addEventListener('change', e => { const file = e.target.files[0]; if (file) this.errorBoundary(() => this.openFile(file)); e.target.value = ''; });
+    this.host.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+    this.host.addEventListener('drop', e => { e.preventDefault(); const file = e.dataTransfer.files[0]; if (file) this.errorBoundary(() => this.openFile(file)); });
+    document.addEventListener('copy', e => { if (this.isInputFocus()) return; this.copyToEvent(e, false); });
+    document.addEventListener('cut', e => { if (this.isInputFocus()) return; this.copyToEvent(e, true); });
+    document.addEventListener('paste', e => { if (this.isInputFocus() || this.dialog.open) return; e.preventDefault(); this.errorBoundary(() => this.pasteText(e.clipboardData.getData('text/plain'))); });
+    $('#sheet-tabs').addEventListener('dblclick', e => { const t = e.target.closest('[data-sheet]'); if (t) { this.switchSheet(t.dataset.sheet); this.renameSheet(); } });
+    $('#sheet-tabs').addEventListener('contextmenu', e => { const t = e.target.closest('[data-sheet]'); if (t) { e.preventDefault(); this.switchSheet(t.dataset.sheet); this.contextMenu(e.clientX, e.clientY, [['rename-sheet','Rename…'],['duplicate-sheet','Duplicate'],['add-sheet','Insert worksheet'],null,['delete-sheet','Delete worksheet']]); } });
+    for (const axis of ['v', 'h']) $(`#${axis}-scrollbar`).addEventListener('pointerdown', e => this.scrollbarDown(e, axis));
+    this.dialog.addEventListener('click', e => { if (e.target === this.dialog) { const b = this.dialog.getBoundingClientRect(); if (e.clientX < b.left || e.clientX > b.right || e.clientY < b.top || e.clientY > b.bottom) this.closeDialog(); } });
+    this.dialog.addEventListener('close', () => this.host.focus());
+    window.addEventListener('beforeunload', () => { if (this.autosave) this.persist(); });
+    window.addEventListener('error', e => { $('#loading')?.remove(); this.toast(`Application error: ${e.message}`, true); });
+  }
+  isInputFocus() { return ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable; }
+  localPoint(e) { const rect = this.host.getBoundingClientRect(); return { x: e.clientX - rect.left, y: e.clientY - rect.top }; }
+  onPointerDown(e) {
+    if (e.button !== 0 || e.target.closest('.chart-card,.v-scrollbar,.h-scrollbar,.cell-editor,.formula-suggestions')) return;
+    const p = this.localPoint(e), hit = this.renderer.hitTest(p.x, p.y), refInput = this.editing ? this.editor : this.barEditing ? this.formulaInput : null;
+    if (refInput && refInput.value.startsWith('=') && /[=+\-*/^(,:<> ]$/.test(refInput.value.slice(0, refInput.selectionStart))) {
+      e.preventDefault(); const at = refInput.selectionStart; const text = address(hit.r, hit.c); refInput.setRangeText(text, at, refInput.selectionEnd, 'end'); this.formulaInput.value = refInput.value;
+      this.drag = { mode: 'reference', reference: true, input: refInput, start: at, length: text.length, anchor: hit }; this.host.setPointerCapture(e.pointerId); return;
+    }
+    e.preventDefault(); this.commitEdit(false); this.commitFormula(); this.host.focus();
+    const colRect = this.renderer.cellRect(0, hit.c, false), rowRect = this.renderer.cellRect(hit.r, 0, false);
+    if (hit.colHeader && !hit.rowHeader && Math.abs(p.x - colRect.x - colRect.w) < 6 && this.editable()) this.drag = { mode: 'resize-col', index: hit.c, start: p.x, size: this.renderer.cols.size(hit.c) };
+    else if (hit.rowHeader && !hit.colHeader && Math.abs(p.y - rowRect.y - rowRect.h) < 6 && this.editable()) this.drag = { mode: 'resize-row', index: hit.r, start: p.y, size: this.renderer.rows.size(hit.r) };
+    else {
+      const end = this.renderer.cellRect(this.selection.r2, this.selection.c2, false);
+      if (!hit.colHeader && !hit.rowHeader && Math.abs(p.x - end.x - end.w) < 7 && Math.abs(p.y - end.y - end.h) < 7 && this.editable()) this.drag = { mode: 'fill', source: { ...this.selection } };
+      else {
+        if (!e.shiftKey) this.anchor = { r: hit.r, c: hit.c };
+        let q = normalizedRange(this.anchor, hit);
+        if (hit.colHeader && hit.rowHeader) q = { r1: 0, c1: 0, r2: MAX_ROWS - 1, c2: MAX_COLS - 1 };
+        else if (hit.colHeader) { q.r1 = 0; q.r2 = MAX_ROWS - 1; }
+        else if (hit.rowHeader) { q.c1 = 0; q.c2 = MAX_COLS - 1; }
+        this.select(q, { r: hit.r, c: hit.c }); this.drag = { mode: 'select', rowHeader: hit.rowHeader, colHeader: hit.colHeader };
+        if (this.paintStyle) { this.format(this.paintStyle); this.paintStyle = null; this.toast('Formatting applied.'); }
+      }
+    }
+    this.host.setPointerCapture(e.pointerId);
+  }
+  onPointerMove(e) {
+    const p = this.localPoint(e), hit = this.renderer.hitTest(p.x, p.y);
+    if (!this.drag) {
+      const rect = this.renderer.cellRect(hit.r, hit.c, false), end = this.renderer.cellRect(this.selection.r2, this.selection.c2, false);
+      this.host.style.cursor = hit.colHeader && Math.abs(p.x - rect.x - rect.w) < 6 ? 'col-resize' : hit.rowHeader && Math.abs(p.y - rect.y - rect.h) < 6 ? 'row-resize' : Math.abs(p.x - end.x - end.w) < 7 && Math.abs(p.y - end.y - end.h) < 7 ? 'crosshair' : 'cell'; return;
+    }
+    const drag = this.drag;
+    if (drag.mode === 'reference') {
+      const q = normalizedRange(drag.anchor, hit), text = rangeAddress(q); drag.input.setRangeText(text, drag.start, drag.start + drag.length, 'end'); drag.length = text.length; this.formulaInput.value = drag.input.value; return;
+    }
+    if (drag.mode === 'resize-col' || drag.mode === 'resize-row') {
+      const horizontal = drag.mode === 'resize-col', delta = (horizontal ? p.x : p.y) - drag.start;
+      drag.next = Math.max(horizontal ? 28 : 18, Math.min(horizontal ? 1000 : 400, drag.size + delta / this.renderer.zoom));
+      const sizes = horizontal ? 'colWidths' : 'rowHeights';
+      if (drag.old === undefined) drag.old = new Map(this.sheet[sizes]);
+      this.sheet[sizes].set(drag.index, drag.next); this.renderer.syncLayout(); return;
+    }
+    if (p.y > this.renderer.height - 22) this.renderer.scrollY += 16; else if (p.y < this.renderer.headerH + 8) this.renderer.scrollY -= 16;
+    if (p.x > this.renderer.width - 22) this.renderer.scrollX += 16; else if (p.x < this.renderer.headerW + 8) this.renderer.scrollX -= 16;
+    this.renderer.clampScroll();
+    if (drag.mode === 'fill') { const q = { r1: Math.min(drag.source.r1, hit.r), c1: Math.min(drag.source.c1, hit.c), r2: Math.max(drag.source.r2, hit.r), c2: Math.max(drag.source.c2, hit.c) }; drag.target = q; this.renderer.fillPreview = q; this.renderer.requestFrame(); }
+    else { let q = normalizedRange(this.anchor, hit); if (drag.colHeader) { q.r1 = 0; q.r2 = MAX_ROWS - 1; } if (drag.rowHeader) { q.c1 = 0; q.c2 = MAX_COLS - 1; } this.select(q, this.anchor); }
+  }
+  onPointerUp(e) {
+    const drag = this.drag; this.drag = null; if (this.host.hasPointerCapture(e.pointerId)) this.host.releasePointerCapture(e.pointerId); if (!drag) return;
+    if (drag.mode === 'reference') { drag.input.focus(); return; }
+    if (drag.mode.startsWith('resize') && drag.next !== undefined) {
+      const sizes = drag.mode === 'resize-col' ? 'colWidths' : 'rowHeights'; this.sheet[sizes] = drag.old;
+      this.workbook.mutate('Resize ' + (sizes === 'colWidths' ? 'column' : 'row'), () => this.sheet[sizes].set(drag.index, drag.next));
+    }
+    if (drag.mode === 'fill') { this.renderer.fillPreview = null; if (drag.target) this.errorBoundary(() => { this.workbook.fill(this.sheet, drag.source, drag.target); this.select(drag.target); }); this.renderer.requestFrame(); }
+  }
+  scrollbarDown(e, axis) {
+    e.preventDefault(); e.stopPropagation(); const track = e.currentTarget, thumb = $(`#${axis}-thumb`), rect = track.getBoundingClientRect(), vertical = axis === 'v';
+    const length = vertical ? rect.height : rect.width, thumbLength = vertical ? thumb.offsetHeight : thumb.offsetWidth, max = vertical ? this.renderer.rows.offset(MAX_ROWS) * this.renderer.zoom - this.renderer.height + this.renderer.headerH : this.renderer.cols.offset(MAX_COLS) * this.renderer.zoom - this.renderer.width + this.renderer.headerW;
+    const grab = e.target === thumb ? (vertical ? e.clientY - thumb.getBoundingClientRect().top : e.clientX - thumb.getBoundingClientRect().left) : thumbLength / 2;
+    const move = event => { const pos = (vertical ? event.clientY - rect.top : event.clientX - rect.left) - grab; this.renderer[vertical ? 'scrollY' : 'scrollX'] = Math.max(0, Math.min(1, pos / Math.max(1, length - thumbLength))) * max; this.renderer.requestFrame(); };
+    track.setPointerCapture(e.pointerId); if (e.target !== thumb) move(e);
+    const up = () => { track.removeEventListener('pointermove', move); track.removeEventListener('pointerup', up); track.removeEventListener('pointercancel', up); };
+    track.addEventListener('pointermove', move); track.addEventListener('pointerup', up); track.addEventListener('pointercancel', up);
+  }
+  updateScrollbars() {
+    for (const axis of ['v','h']) {
+      const vertical = axis === 'v', track = $(`#${axis}-scrollbar`), thumb = $(`#${axis}-thumb`), length = vertical ? track.clientHeight : track.clientWidth;
+      const total = (vertical ? this.renderer.rows.offset(MAX_ROWS) : this.renderer.cols.offset(MAX_COLS)) * this.renderer.zoom, view = vertical ? this.renderer.height - this.renderer.headerH : this.renderer.width - this.renderer.headerW, scroll = vertical ? this.renderer.scrollY : this.renderer.scrollX;
+      const size = Math.max(28, length * view / total), position = (length - size) * scroll / Math.max(1, total - view);
+      thumb.style[vertical ? 'height' : 'width'] = size + 'px'; thumb.style[vertical ? 'top' : 'left'] = Math.max(0, Math.min(length - size, position)) + 'px';
+    }
+  }
+  startEdit(initial) {
+    if (!this.editable()) return;
+    this.editing = true; this.barEditing = false; this.editor.hidden = false; this.editor.value = initial === undefined ? this.sheet.raw(this.active.r, this.active.c) : initial; this.formulaInput.value = this.editor.value;
+    const style = this.sheet.get(this.active.r, this.active.c)?.style || {}; this.editor.style.fontFamily = style.fontFamily || 'Aptos, "Segoe UI", Arial, sans-serif'; this.editor.style.fontSize = (style.fontSize || 13) * this.renderer.zoom + 'px'; this.editor.style.fontWeight = style.bold ? '600' : '400';
+    this.positionEditor(); this.editor.focus(); this.editor.setSelectionRange(this.editor.value.length, this.editor.value.length); $('#mode-status').textContent = 'Edit';
+  }
+  positionEditor() {
+    if (!this.editing) return; const rect = this.renderer.cellRect(this.active.r, this.active.c);
+    this.editor.style.left = rect.x + 'px'; this.editor.style.top = rect.y + 'px'; this.editor.style.width = Math.min(Math.max(rect.w + 1, 150), this.renderer.width - rect.x - 12) + 'px'; this.editor.style.height = Math.max(rect.h + 1, 29) + 'px';
+  }
+  commitEdit(move = false) {
+    if (!this.editing) return; const raw = this.editor.value; this.editing = false; this.editor.hidden = true; $('#formula-suggestions').hidden = true;
+    if (raw !== this.sheet.raw(this.active.r, this.active.c)) this.workbook.setRaw(this.sheet, this.active.r, this.active.c, raw);
+    this.updateUI(); if (move) this.goto(this.active.r + 1, this.active.c);
+  }
+  commitFormula() {
+    if (!this.barEditing) return; this.barEditing = false; $('#formula-suggestions').hidden = true;
+    if (this.editable() && this.formulaInput.value !== this.sheet.raw(this.active.r, this.active.c)) this.workbook.setRaw(this.sheet, this.active.r, this.active.c, this.formulaInput.value); this.updateUI();
+  }
+  cancelEdit() { this.editing = this.barEditing = false; this.editor.hidden = true; $('#formula-suggestions').hidden = true; this.updateUI(); this.host.focus(); }
+  showFormulaSuggestions(input) {
+    const list = $('#formula-suggestions'), before = input.value.slice(0, input.selectionStart), match = input.value.startsWith('=') && /(?:^=|[+\-*/(,])([A-Z][A-Z0-9.]*)$/i.exec(before);
+    if (!match || match[1].length < 1) { list.hidden = true; return; }
+    const names = [...FUNCTIONS.keys()].filter(n => n.startsWith(match[1].toUpperCase())).slice(0, 7); if (!names.length) { list.hidden = true; return; }
+    list.innerHTML = names.map(n => `<button data-completion="${n}"><span>${n}</span><span>${escapeHTML(FUNCTIONS.get(n).description)}</span></button>`).join('');
+    const rect = this.renderer.cellRect(this.active.r, this.active.c); list.style.left = Math.max(46, Math.min(rect.x, this.renderer.width - 380)) + 'px'; list.style.top = (input === this.formulaInput ? 0 : rect.y + rect.h + 3) + 'px'; list.hidden = false;
+    list.onpointerdown = e => { const btn = e.target.closest('[data-completion]'); if (!btn) return; e.preventDefault(); e.stopPropagation(); const end = input.selectionStart; input.setRangeText(btn.dataset.completion + '(', end - match[1].length, end, 'end'); this.formulaInput.value = input.value; list.hidden = true; input.focus(); };
+  }
+  onKey(e) {
+    if (this.composing || e.isComposing) return;
+    const mod = e.ctrlKey || e.metaKey, key = e.key.toLowerCase();
+    if (e.key === 'Escape') { $('#context-menu').hidden = true; if (this.dialog.open) { this.closeDialog(); return; } this.cancelEdit(); this.renderer.copyRange = null; this.renderer.requestFrame(); return; }
+    if (this.dialog.open) return;
+    if (mod && ['s','o','p','k'].includes(key)) { e.preventDefault(); this.errorBoundary(() => this.run({ s:'save', o:'open', p:'print', k:'commands' }[key])); return; }
+    if (this.editing || this.barEditing) {
+      if (e.key === 'Enter' && !e.altKey) { e.preventDefault(); if (this.editing) this.commitEdit(false); else this.commitFormula(); this.host.focus(); this.goto(this.active.r + (e.shiftKey ? -1 : 1), this.active.c); }
+      else if (e.key === 'Tab') { e.preventDefault(); if (this.editing) this.commitEdit(false); else this.commitFormula(); this.host.focus(); this.goto(this.active.r, this.active.c + (e.shiftKey ? -1 : 1)); }
+      else if (e.key === 'F4') { e.preventDefault(); const input = this.editing ? this.editor : this.formulaInput; const at = input.selectionStart, left = input.value.slice(0, at), m = /\$?([A-Z]{1,3})\$?([1-9]\d*)$/i.exec(left); if (m) { const text = m[0], next = !text.includes('$') ? `$${m[1]}$${m[2]}` : text.startsWith('$') && /\$\d/.test(text) ? `${m[1]}$${m[2]}` : !text.startsWith('$') ? `$${m[1]}${m[2]}` : `${m[1]}${m[2]}`; input.setRangeText(next, at - text.length, at, 'end'); this.formulaInput.value = input.value; } }
+      return;
+    }
+    if (this.isInputFocus()) return;
+    if (mod && ['z','y','f','h','b','i','u','a','d','r','`','n'].includes(key)) {
+      e.preventDefault();
+      const command = { z:e.shiftKey ? 'redo' : 'undo', y:'redo', f:'find', h:'find', b:'bold', i:'italic', u:'underline', a:'select-all', d:'fill-down', r:'fill-right', '`':'show-formulas', n:'new' }[key]; this.errorBoundary(() => this.run(command)); return;
+    }
+    if (e.key === 'F1') { e.preventDefault(); this.run('help'); return; }
+    if (e.key === 'F2') { e.preventDefault(); this.startEdit(); return; }
+    if (e.altKey && e.key === '=') { e.preventDefault(); this.run('autosum'); return; }
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Tab','Enter','Home','End','PageUp','PageDown'].includes(e.key)) {
+      e.preventDefault(); let { r, c } = this.active;
+      if (e.key === 'Home') { c = 0; if (mod) r = 0; }
+      else if (e.key === 'End') { const used = this.sheet.usedRange(); c = used.c2; if (mod) r = used.r2; }
+      else if (e.key === 'PageDown' || e.key === 'PageUp') r += Math.max(1, Math.floor((this.renderer.height - 27) / (27 * this.renderer.zoom)) - 1) * (e.key === 'PageDown' ? 1 : -1);
+      else { const dr = e.key === 'ArrowDown' || e.key === 'Enter' && !e.shiftKey ? 1 : e.key === 'ArrowUp' || e.key === 'Enter' && e.shiftKey ? -1 : 0, dc = e.key === 'ArrowRight' || e.key === 'Tab' && !e.shiftKey ? 1 : e.key === 'ArrowLeft' || e.key === 'Tab' && e.shiftKey ? -1 : 0;
+        if (mod && e.key.startsWith('Arrow')) { const dest = this.jumpEdge(dr, dc); r = dest.r; c = dest.c; } else { const merge = this.sheet.mergeAt(r, c); if (merge) { if (dr > 0) r = merge.r2; if (dc > 0) c = merge.c2; } r += dr; c += dc; }
+      }
+      while (this.sheet.hiddenRows.has(r) && r >= 0 && r < MAX_ROWS) r += e.key === 'ArrowUp' || e.key === 'PageUp' ? -1 : 1;
+      this.goto(r, c, e.shiftKey && !['Enter','Tab'].includes(e.key)); return;
+    }
+    if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); if (this.editable()) this.workbook.clear(this.sheet, this.selection); return; }
+    if (!mod && !e.altKey && e.key.length === 1) { e.preventDefault(); this.startEdit(e.key); }
+    else if (e.key === 'Process' || e.keyCode === 229) this.startEdit('');
+  }
+  jumpEdge(dr, dc) {
+    let { r, c } = this.active; const step = () => ({ r: r + dr, c: c + dc }), within = p => p.r >= 0 && p.c >= 0 && p.r < MAX_ROWS && p.c < MAX_COLS;
+    if (this.sheet.raw(r, c) && within(step()) && this.sheet.raw(r + dr, c + dc)) { while (within(step()) && this.sheet.raw(r + dr, c + dc)) { r += dr; c += dc; } return { r, c }; }
+    let best = null, distance = Infinity;
+    for (const [key, cell] of this.sheet.cells) { if (!cell.raw) continue; const [rr, cc] = key.split(',').map(Number), delta = dr ? (rr - r) * dr : (cc - c) * dc; if ((dr ? cc === c : rr === r) && delta > 0 && delta < distance) { distance = delta; best = { r: rr, c: cc }; } }
+    return best || { r: dr ? dr > 0 ? MAX_ROWS - 1 : 0 : r, c: dc ? dc > 0 ? MAX_COLS - 1 : 0 : c };
+  }
+  renderRibbon() {
+    $$('[data-tab]').forEach(b => b.classList.toggle('selected', b.dataset.tab === this.tab));
+    const stack = (...items) => `<div class="tool-stack">${items.join('')}</div>`;
+    let html = '';
+    if (this.tab === 'Home') {
+      html += group('Clipboard', tool('paste','Paste','paste',true,true) + stack(tool('cut','Cut','cut'),tool('copy','Copy','copy')) + stack(tool('format-painter','Format painter','paint')));
+      html += group('Font', `<div class="font-tools"><div class="ribbon-row"><select id="font-family" class="font-select" aria-label="Font family"><option>Aptos</option><option>Arial</option><option>Georgia</option><option>Verdana</option><option>Courier New</option></select><select id="font-size" class="font-size" aria-label="Font size">${[8,9,10,11,12,14,16,18,20,24,28,32,36,48].map(s => `<option${s === 10 ? ' selected' : ''}>${s}</option>`).join('')}</select>${mini('font-larger','plus','Increase font size','A⁺')}${mini('font-smaller','plus','Decrease font size','A⁻')}</div><div class="ribbon-row">${mini('bold','','Bold (Ctrl/⌘ B)','<span class="text-bold">B</span>')}${mini('italic','','Italic (Ctrl/⌘ I)','<span class="text-italic">I</span>')}${mini('underline','','Underline (Ctrl/⌘ U)','<span class="text-underline">U</span>')}<span class="ribbon-sep"></span>${mini('borders','border','Toggle cell borders')}<span class="ribbon-sep"></span><button class="mini-tool fill-color-tool" data-action="fill-color" title="Fill color" aria-label="Fill color">${icon('fill')}</button><button class="mini-tool font-color-tool" data-action="text-color" title="Font color" aria-label="Font color">A</button></div></div>`);
+      html += group('Alignment', `<div class="font-tools"><div class="ribbon-row">${mini('align-left','alignLeft','Align left')}${mini('align-center','alignCenter','Center')}${mini('align-right','alignRight','Align right')}${tool('wrap','Wrap text','wrap')}</div><div class="ribbon-row">${tool('merge','Merge & center','merge')}</div></div>`);
+      html += group('Number', `<div class="font-tools"><div class="ribbon-row"><select id="number-format" class="number-format" aria-label="Number format"><option value="general">General</option><option value="number">Number</option><option value="currency">Currency</option><option value="percent">Percentage</option><option value="date">Short date</option><option value="integer">Integer</option></select></div><div class="ribbon-row">${mini('currency','','Currency','$')}${mini('percent','percent','Percentage')}${mini('number','','Number with separator',',')}<span class="ribbon-sep"></span>${mini('decimal-less','','Decrease decimals','.0←')}${mini('decimal-more','','Increase decimals','→.00')}</div></div>`);
+      html += group('Styles', tool('conditional','Conditional<br>formatting','conditional',true,true) + tool('format-table','Format as<br>table','table',true,true) + `<div class="style-gallery"><button class="style-chip" data-action="style-normal">Normal</button><button class="style-chip good" data-action="style-good">Good</button><button class="style-chip heading" data-action="style-heading">Heading</button><button class="style-chip warning" data-action="style-warning">Warning</button></div>`, 'styles-group');
+      html += group('Cells', tool('insert-menu','Insert','insert',true,true) + tool('delete-menu','Delete','delete',true,true));
+      html += group('Editing', stack(tool('autosum','AutoSum','sum'),tool('clear-menu','Clear','clear')) + tool('sort-filter','Sort &<br>filter','sort',true,true) + tool('find','Find &<br>select','search',true,true));
+    } else if (this.tab === 'Insert') {
+      html = group('Tables',tool('format-table','Table','table',true)) + group('Charts',tool('chart','Column chart','chart',true)+tool('chart-line','Line chart','line',true)+tool('chart-bar','Bar chart','sort',true)+tool('chart-donut','Doughnut chart','donut',true)) + group('Text & references',tool('add-note','Cell note','comment',true)+tool('name-manager','Named range','name',true)) + group('Worksheets',tool('add-sheet','New sheet','plus',true)+tool('duplicate-sheet','Duplicate sheet','copy',true));
+    } else if (this.tab === 'Page Layout') {
+      html = group('Page setup',tool('print','Print worksheet','print',true)+tool('print-selection','Print selection','grid',true)) + group('Sheet options',tool('toggle-gridlines','Gridlines','grid',true)+tool('auto-fit','Auto-fit columns','table',true)+tool('wrap','Wrap text','wrap',true)) + group('Workbook appearance',tool('theme','Light / dark','moon',true)+tool('zoom-reset','Actual size','search',true));
+    } else if (this.tab === 'Formulas') {
+      html = group('Function library',tool('functions','Insert function','function',true)+tool('autosum','AutoSum','sum',true)) + group('Defined names',tool('name-manager','Name manager','name',true)) + group('Formula auditing',tool('show-formulas','Show formulas','function',true)+tool('inspect-formula','Inspect cell','search',true)) + group('Calculation',tool('recalculate','Calculate now','refresh',true));
+    } else if (this.tab === 'Data') {
+      html = group('Get data',tool('open','From CSV / XLSX','open',true)+tool('export-csv','Export CSV','export',true)) + group('Sort & filter',tool('sort-asc','Sort A to Z','sort',true)+tool('sort-desc','Sort Z to A','sort',true)+tool('sort','Custom sort','table',true)+tool('filter','Filter','filter',true)+tool('clear-filter','Clear filters','clear',true)) + group('Data tools',tool('remove-duplicates','Remove duplicates','table',true)+tool('recalculate','Recalculate','refresh',true));
+    } else if (this.tab === 'Review') {
+      html = group('Notes',tool('add-note','New note','comment',true)+tool('notes','Show all notes','comment',true)) + group('Protection',tool('protect',this.sheet.protected ? 'Enable editing' : 'Read-only sheet','lock',true)) + group('Workbook',tool('inspect-formula','Inspect active cell','search',true)+tool('about','About Gridline','info',true));
+    } else if (this.tab === 'View') {
+      html = group('Show',tool('toggle-gridlines','Gridlines','grid',true)+tool('show-formulas','Formulas','function',true)+tool('theme','Light / dark','moon',true)) + group('Zoom',tool('zoom-in','Zoom in','search',true)+tool('zoom-out','Zoom out','search',true)+tool('zoom-reset','100%','grid',true)) + group('Window',tool('freeze','Freeze panes','freeze',true)+tool('freeze-top','Freeze top row','table',true)+tool('freeze-first','Freeze first column','table',true)+tool('unfreeze','Unfreeze panes','clear',true)) + group('Engine',tool('performance','Performance','grid',true));
+    } else html = group('Get started',tool('help','Keyboard shortcuts','info',true)+tool('commands','Find a command','search',true)+tool('sample','Load demo workbook','table',true)) + group('Gridline',tool('about','About & limitations','info',true)+tool('performance','Engine diagnostics','grid',true));
+    $('#ribbon').innerHTML = html;
+    $('#font-family')?.addEventListener('change', e => this.errorBoundary(() => this.format({ fontFamily: e.target.value })));
+    $('#font-size')?.addEventListener('change', e => this.errorBoundary(() => this.format({ fontSize: +e.target.value / .75 })));
+    $('#number-format')?.addEventListener('change', e => this.errorBoundary(() => this.format({ format: e.target.value, decimals: undefined })));
+    this.updateUI();
+  }
+  renderTabs() {
+    $('#sheet-tabs').innerHTML = this.workbook.sheets.map(s => `<button class="sheet-tab ${s.id === this.sheet.id ? 'selected' : ''}" data-sheet="${escapeHTML(s.id)}" title="Double-click to rename · Right-click for options"><span class="sheet-tab-dot" style="background:${/^#[0-9a-f]{6}$/i.test(s.color) ? s.color : '#18835a'}"></span>${escapeHTML(s.name)}</button>`).join('');
+  }
+  switchSheet(id) {
+    if (id === this.sheet.id) return; this.commitEdit(false); this.commitFormula(); this.sheetViews.set(this.sheet.id, { selection: { ...this.selection }, active: { ...this.active }, scrollX: this.renderer.scrollX, scrollY: this.renderer.scrollY });
+    this.workbook.activeSheetId = id; const view = this.sheetViews.get(id); this.renderer.scrollX = view?.scrollX ?? 0; this.renderer.scrollY = view?.scrollY ?? 0; this.renderer.copyRange = null; this.renderer.syncLayout(); this.anchor = view?.active || { r: 0, c: 0 }; this.select(view?.selection || normalizedRange(this.anchor), this.anchor, false); this.renderTabs(); this.renderCharts(); if (this.panelType === 'notes') this.showNotes(); this.host.focus();
+  }
+  setZoom(zoom) { this.renderer.setZoom(Math.round(zoom * 10) / 10); $('#zoom-value').textContent = Math.round(this.renderer.zoom * 100) + '%'; $('#zoom-slider').value = this.renderer.zoom * 100; this.positionCharts(); }
+  format(style) { if (this.editable()) this.workbook.applyStyle(this.sheet, this.selection, style); }
+  autoFit(column = null) {
+    if (!this.editable()) return; const cols = column === null ? [this.selection.c1, Math.min(this.selection.c2, this.selection.c1 + 199)] : [column, column], sizes = new Map();
+    for (let c = cols[0]; c <= cols[1]; c++) { let width = 54; for (const [key, cell] of this.sheet.cells) { const [r, cc] = key.split(',').map(Number); if (cc !== c || this.sheet.mergeAt(r, c)) continue; const text = this.workbook.display(this.sheet, r, c); const font = this.renderer.font(cell.style); width = Math.max(width, this.renderer.measureText(text, font) / this.renderer.zoom + 23); } sizes.set(c, Math.min(500, Math.ceil(width))); }
+    this.workbook.mutate('Auto-fit columns', () => { for (const [c, width] of sizes) this.sheet.colWidths.set(c, width); });
+  }
+  dataRange() {
+    const q = this.selection;
+    if (q.r1 !== q.r2 || q.c1 !== q.c2) {
+      const used = this.sheet.usedRange(); return { r1: q.r1, c1: q.c1, r2: Math.min(q.r2, used.r2), c2: Math.min(q.c2, used.c2) };
+    }
+    const filter = this.sheet.filters?.range || this.sheet.dataRegion;
+    if (filter && this.active.r >= filter.r1 && this.active.r <= filter.r2 && this.active.c >= filter.c1 && this.active.c <= filter.c2) return { ...filter };
+    let { r, c } = this.active, r1 = r, r2 = r, c1 = c, c2 = c;
+    while (c1 > 0 && this.sheet.raw(r, c1 - 1)) c1--; while (c2 < MAX_COLS - 1 && this.sheet.raw(r, c2 + 1)) c2++;
+    const filled = rr => { for (let cc = c1; cc <= c2; cc++) if (this.sheet.raw(rr, cc)) return true; return false; };
+    while (r1 > 0 && filled(r1 - 1)) r1--; while (r2 < MAX_ROWS - 1 && r2 - r1 < 10000 && filled(r2 + 1)) r2++;
+    return { r1, c1, r2, c2 };
+  }
+  async run(action, element = null) {
+    if (!['cancel-edit','commit-edit','close-dialog'].includes(action)) { this.commitEdit(false); this.commitFormula(); }
+    const style = this.sheet.get(this.active.r, this.active.c)?.style || {};
+    if (['bold','italic','underline','wrap'].includes(action)) return this.format({ [action]: !style[action] });
+    if (action.startsWith('align-')) return this.format({ align: action.slice(6) });
+    switch (action) {
+      case 'file': return this.showFile();
+      case 'export': return this.showExport();
+      case 'new': return this.confirm('Create a new workbook?', 'Export your current workbook first to keep a separate copy. The new workbook will replace the local autosave.', () => this.setWorkbook(new Workbook()), 'Create workbook');
+      case 'sample': return this.confirm('Load the demo workbook?', 'This replaces the current local workbook with the illustrative revenue workbook.', () => { this.setWorkbook(createSampleWorkbook()); this.goto(12, 6); }, 'Load demo');
+      case 'open': this.closeDialog(); $('#file-input').click(); return;
+      case 'save': this.persist(); downloadFile(this.fileName('.gridline'), JSON.stringify(this.workbook.toJSON(), null, 2), 'application/json'); this.toast('Gridline workbook exported with all app features.'); return;
+      case 'export-xlsx': downloadFile(this.fileName('.xlsx'), exportXLSX(this.workbook), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); this.closeDialog(); this.toast('XLSX exported. Charts, notes, and conditional rules remain in the .gridline format.'); return;
+      case 'export-csv': downloadFile(this.sheet.name + '.csv', exportCSV(this.workbook), 'text/csv;charset=utf-8'); this.closeDialog(); this.toast('Current sheet exported as CSV values.'); return;
+      case 'autosave': this.autosave = !this.autosave; $('#autosave-toggle').classList.toggle('on', this.autosave); if (this.autosave) this.persist(); else $('#save-status').textContent = 'Autosave is off'; return;
+      case 'undo': this.workbook.undo(); return;
+      case 'redo': this.workbook.redo(); return;
+      case 'copy': return this.copy(false);
+      case 'cut': return this.copy(true);
+      case 'paste': return this.paste();
+      case 'format-painter': this.paintStyle = structuredClone(style); this.toast('Select a cell or range to apply the current formatting.'); return;
+      case 'fill-color': $('#fill-picker').click(); return;
+      case 'text-color': $('#text-picker').click(); return;
+      case 'borders': return this.format({ border: !style.border });
+      case 'currency': case 'percent': case 'number': return this.format({ format: action, decimals: undefined });
+      case 'decimal-less': return this.format({ decimals: Math.max(0, (style.decimals ?? 2) - 1) });
+      case 'decimal-more': return this.format({ decimals: Math.min(10, (style.decimals ?? 0) + 1) });
+      case 'font-larger': return this.format({ fontSize: Math.min(72, (style.fontSize || 13) + 2) });
+      case 'font-smaller': return this.format({ fontSize: Math.max(8, (style.fontSize || 13) - 2) });
+      case 'style-normal': return this.format({ fill:'#ffffff', color:'#293b32', bold:false, italic:false, border:false, fontSize:13 });
+      case 'style-good': return this.format({ fill:'#e0efdf', color:'#37683d' });
+      case 'style-heading': return this.format({ fill:'#176b4a', color:'#ffffff', bold:true });
+      case 'style-warning': return this.format({ fill:'#fff0d4', color:'#8d6224' });
+      case 'merge': return this.mergeSelection();
+      case 'auto-fit': return this.autoFit();
+      case 'format-table': return this.formatTable();
+      case 'conditional': return this.showConditional();
+      case 'insert-menu': return this.menuAt(element, [['insert-row','Insert row above'],['insert-column','Insert column to the left'],['add-sheet','Insert worksheet']]);
+      case 'delete-menu': return this.menuAt(element, [['delete-row','Delete selected row'],['delete-column','Delete selected column'],null,['clear','Clear contents'],['delete-sheet','Delete worksheet']]);
+      case 'clear-menu': return this.menuAt(element, [['clear','Clear contents'],['clear-format','Clear formatting'],['clear-all','Clear all']]);
+      case 'clear': if (this.editable()) this.workbook.clear(this.sheet, this.selection); return;
+      case 'clear-all': if (this.editable()) this.workbook.clear(this.sheet, this.selection, true); return;
+      case 'clear-format': if (this.editable()) this.workbook.transaction('Clear formatting', () => { for (const p of cellsIn(this.selection)) if (this.sheet.get(p.r, p.c)) this.workbook.setCell(this.sheet, p.r, p.c, { style: null }); }); return;
+      case 'insert-row': case 'delete-row': case 'insert-column': case 'delete-column': if (this.editable()) { const axis = action.endsWith('row') ? 'row' : 'column'; this.workbook.structuralEdit(this.sheet, axis, axis === 'row' ? this.active.r : this.active.c, action.startsWith('insert') ? 1 : -1); this.toast('Structural edit applied. Chart, filter and conditional-rule metadata on this sheet was reset; Undo restores it.'); } return;
+      case 'autosum': return this.autoSum();
+      case 'fill-down': if (this.editable()) { const q = this.selection; const source = { ...q, r2: q.r1 }; if (q.r1 === q.r2 && q.r1 > 0) { source.r1 = source.r2 = q.r1 - 1; } this.workbook.fill(this.sheet, source, q); } return;
+      case 'fill-right': if (this.editable()) { const q = this.selection, source = { ...q, c2: q.c1 }; if (q.c1 === q.c2 && q.c1 > 0) source.c1 = source.c2 = q.c1 - 1; this.workbook.fill(this.sheet, source, q); } return;
+      case 'select-all': this.select({ r1:0,c1:0,r2:MAX_ROWS-1,c2:MAX_COLS-1 },this.active); return;
+      case 'sort-filter': return this.menuAt(element, [['sort-asc','Sort A to Z'],['sort-desc','Sort Z to A'],['sort','Custom sort…'],null,['filter','Filter values…'],['clear-filter','Clear filters']]);
+      case 'sort': return this.showSort();
+      case 'sort-asc': case 'sort-desc': if (this.editable()) { const q = this.dataRange(); this.workbook.sort(this.sheet, q, Math.max(q.c1, Math.min(q.c2,this.active.c)), action === 'sort-desc', true); } return;
+      case 'filter': return this.showFilter();
+      case 'clear-filter': this.workbook.mutate('Clear filters', () => { this.sheet.hiddenRows.clear(); if (this.sheet.filters) this.sheet.filters.criteria = {}; }); return;
+      case 'remove-duplicates': return this.removeDuplicates();
+      case 'find': return this.showFind();
+      case 'notes': return this.showNotes();
+      case 'add-note': return this.addNote();
+      case 'delete-note': if (this.editable()) this.workbook.setCell(this.sheet, +element.dataset.row, +element.dataset.col, { note: undefined }); return;
+      case 'protect': this.workbook.mutate('Toggle read-only sheet', () => this.sheet.protected = !this.sheet.protected); this.renderRibbon(); this.toast(this.sheet.protected ? 'Sheet editing is disabled in this app. This is not encryption.' : 'Sheet editing enabled.'); return;
+      case 'functions': return this.showFunctions();
+      case 'commands': return this.showCommands();
+      case 'name-manager': return this.showNames();
+      case 'recalculate': this.workbook.engine.invalidate(); this.renderCharts(); this.updateUI(); this.toast('Workbook recalculated.'); return;
+      case 'inspect-formula': return this.showCellInspector();
+      case 'show-formulas': this.renderer.showFormulas = !this.renderer.showFormulas; this.renderer.requestFrame(); return;
+      case 'chart': case 'chart-line': case 'chart-bar': case 'chart-donut': return this.showChart(action === 'chart' ? 'column' : action.slice(6));
+      case 'remove-chart': if (!this.editable()) return; this.workbook.mutate('Remove chart', () => this.sheet.charts = this.sheet.charts.filter(c => c.id !== element.dataset.chart)); return;
+      case 'freeze': case 'freeze-top': case 'freeze-first': case 'unfreeze': this.workbook.mutate('Freeze panes', () => { this.sheet.freezeRows = action === 'freeze' ? Math.min(1000,this.active.r) : action === 'freeze-top' ? 1 : 0; this.sheet.freezeCols = action === 'freeze' ? Math.min(100,this.active.c) : action === 'freeze-first' ? 1 : 0; }); this.renderer.scrollX = this.renderer.scrollY = 0; this.renderer.requestFrame(); return;
+      case 'toggle-gridlines': this.workbook.mutate('Toggle gridlines', () => this.sheet.gridlines = !this.sheet.gridlines); return;
+      case 'theme': document.body.classList.toggle('dark'); this.renderer.dark = document.body.classList.contains('dark'); this.renderer.requestFrame(); this.renderCharts(); return;
+      case 'zoom-in': return this.setZoom(this.renderer.zoom + .1);
+      case 'zoom-out': return this.setZoom(this.renderer.zoom - .1);
+      case 'zoom-reset': return this.setZoom(1);
+      case 'add-sheet': this.workbook.addSheet(); this.renderer.scrollX = this.renderer.scrollY = 0; this.goto(0,0); return;
+      case 'duplicate-sheet': this.workbook.duplicateSheet(this.sheet); return;
+      case 'rename-sheet': return this.renameSheet();
+      case 'delete-sheet': return this.confirm(`Delete “${this.sheet.name}”?`, 'This worksheet will be removed. You can undo the deletion.', () => this.workbook.deleteSheet(this.sheet), 'Delete worksheet');
+      case 'prev-sheet': case 'next-sheet': { const at = this.workbook.sheets.findIndex(s => s.id === this.sheet.id), next = this.workbook.sheets[at + (action === 'prev-sheet' ? -1 : 1)]; if (next) this.switchSheet(next.id); return; }
+      case 'sheets': return this.showSheets();
+      case 'performance': return this.showPerformance();
+      case 'help': return this.showHelp();
+      case 'about': return this.showAbout();
+      case 'print': return this.printSheet(false);
+      case 'print-selection': return this.printSheet(true);
+      case 'cancel-edit': return this.cancelEdit();
+      case 'commit-edit': this.commitEdit(false); this.commitFormula(); this.host.focus(); return;
+      case 'expand-formula': $('.formula-row').classList.toggle('expanded'); return;
+      case 'close-dialog': return this.closeDialog();
+      case 'close-panel': return this.closePanel();
+      default: throw new Error(`Unknown command: ${action}`);
+    }
+  }
+  fileName(extension) { return this.workbook.title.replace(/[<>:"/\\|?*]/g, '-').slice(0, 100) + extension; }
+  async openFile(file) {
+    if (file.size > 32 * 1024 * 1024) throw new Error('Files must be 32 MB or smaller.'); this.toast('Opening ' + file.name + '…');
+    const title = file.name.replace(/\.[^.]+$/, ''); let workbook, warnings;
+    if (/\.xlsx$/i.test(file.name)) { const result = await importXLSX(await file.arrayBuffer(), title); workbook = result.workbook; warnings = result.warnings; }
+    else if (/\.(gridline|json)$/i.test(file.name)) workbook = Workbook.fromJSON(JSON.parse(await file.text()));
+    else workbook = workbookFromCSV(await file.text(), title);
+    this.setWorkbook(workbook); this.toast(warnings?.[0] || `Opened ${file.name}.`);
+  }
+  clipboardPayload(cut = false) {
+    const q = this.selection, rows = [], cells = [];
+    for (const { r,c } of cellsIn(q)) {
+      if (!rows[r-q.r1]) { rows[r-q.r1] = []; cells[r-q.r1] = []; }
+      const value = this.workbook.value(this.sheet,r,c); rows[r-q.r1][c-q.c1] = value instanceof FormulaError ? value.code : value ?? ''; cells[r-q.r1][c-q.c1] = structuredClone(this.sheet.get(r,c) || { raw:'' });
+    }
+    const text = serializeDelimited(rows,'\t'); this.clipboard = { text, cells, source:{...q}, sheetId:this.sheet.id, cut }; this.renderer.copyRange = {...q}; this.renderer.requestFrame(); return text;
+  }
+  copyToEvent(e, cut) { this.errorBoundary(() => { e.clipboardData.setData('text/plain',this.clipboardPayload(cut)); e.preventDefault(); }); }
+  async copy(cut) {
+    const text = this.clipboardPayload(cut);
+    try { await navigator.clipboard.writeText(text); this.toast(cut ? 'Cut selection. Paste to move its cells.' : 'Selection copied.'); }
+    catch { this.toast('Selection copied inside Gridline. Use Paste, or Ctrl/⌘ C to copy to your system clipboard.'); }
+  }
+  async paste() { let text; try { text = await navigator.clipboard.readText(); } catch { text = this.clipboard?.text; } if (text === undefined) { this.toast('Use Ctrl/⌘ V to paste from your clipboard.'); this.host.focus(); return; } this.pasteText(text); }
+  pasteText(text) {
+    if (!this.editable()) return; const internal = this.clipboard?.text === text ? this.clipboard : null, values = internal ? internal.cells : parseDelimited(text,'\t');
+    const r0 = this.active.r, c0 = this.active.c, h = values.length, w = Math.max(...values.map(r => r.length)); if (h*w > MAX_RANGE_CELLS || r0+h > MAX_ROWS || c0+w > MAX_COLS) throw new Error('The pasted range exceeds sheet or operation limits.');
+    this.workbook.transaction(internal?.cut ? 'Move cells' : 'Paste cells', () => {
+      if (internal?.cut) { const source = this.workbook.sheets.find(s => s.id === internal.sheetId); if (source?.protected) throw new Error('The source sheet is read-only.'); if (source) this.workbook.clear(source,internal.source,true); }
+      values.forEach((row,ri) => row.forEach((value,ci) => {
+        const cell = internal ? structuredClone(value) : {raw:String(value)};
+        if (internal && !internal.cut) cell.raw = shiftFormula(cell.raw, r0-internal.source.r1, c0-internal.source.c1);
+        this.workbook.setCell(this.sheet,r0+ri,c0+ci,null); this.workbook.setCell(this.sheet,r0+ri,c0+ci,cell);
+      }));
+    });
+    if (internal?.cut) { this.clipboard = null; this.renderer.copyRange = null; }
+    this.select({r1:r0,c1:c0,r2:r0+h-1,c2:c0+w-1},{r:r0,c:c0}); this.host.focus();
+  }
+  autoSum() {
+    if (!this.editable()) return; const q = this.selection;
+    if (q.r1 !== q.r2 || q.c1 !== q.c2) {
+      this.workbook.transaction('AutoSum', () => { for (let c=q.c1;c<=q.c2;c++) this.workbook.setRaw(this.sheet,q.r2+1,c,`=SUM(${address(q.r1,c)}:${address(q.r2,c)})`); }); this.goto(q.r2+1,q.c1); return;
+    }
+    const {r,c}=this.active; let start=r-1; while(start>=0&&typeof this.workbook.value(this.sheet,start,c)==='number')start--;
+    if(start<r-1) { this.workbook.setRaw(this.sheet,r,c,`=SUM(${address(start+1,c)}:${address(r-1,c)})`); return; }
+    let left=c-1; while(left>=0&&typeof this.workbook.value(this.sheet,r,left)==='number')left--;
+    if(left<c-1)this.workbook.setRaw(this.sheet,r,c,`=SUM(${address(r,left+1)}:${address(r,c-1)})`); else this.startEdit('=SUM(');
+  }
+  mergeSelection() {
+    if (!this.editable()) return; const q={...this.selection}, overlap=m=>!(m.r2<q.r1||m.r1>q.r2||m.c2<q.c1||m.c1>q.c2), existing=this.sheet.merges.some(overlap);
+    if(existing) { this.workbook.mutate('Unmerge cells',()=>this.sheet.merges=this.sheet.merges.filter(m=>!overlap(m))); return; }
+    if(q.r1===q.r2&&q.c1===q.c2)return;
+    const apply=()=>this.workbook.mutate('Merge cells',()=> { this.sheet.merges.push(q); const first=this.sheet.get(q.r1,q.c1)||{raw:''}; first.style={...first.style,align:'center'}; this.sheet.cells.set(keyOf(q.r1,q.c1),first); for(const p of cellsIn(q))if(p.r!==q.r1||p.c!==q.c1){ const cell=this.sheet.get(p.r,p.c); if(cell)cell.raw=''; } });
+    let nonempty=0;for(const p of cellsIn(q))if(this.sheet.raw(p.r,p.c))nonempty++;
+    if(nonempty>1)this.confirm('Merge selected cells?','Only the upper-left value is kept. Other values in the selection are cleared. Undo restores them.',apply,'Merge cells');else apply();
+  }
+  formatTable() {
+    if(!this.editable())return;const q=this.dataRange();if(q.r2<=q.r1){this.toast('Select a rectangular range with a header and at least one data row.');return;}
+    [...cellsIn(q)];
+    this.workbook.mutate('Format as table',()=>{for(const {r,c} of cellsIn(q)){const cell=this.sheet.get(r,c)||{raw:''};cell.style={...cell.style,fill:r===q.r1?'#176b4a':(r-q.r1)%2?'#ffffff':'#eff6f1',color:r===q.r1?'#ffffff':'#344f3e',bold:r===q.r1};this.sheet.cells.set(keyOf(r,c),cell);}this.sheet.filters={range:q,criteria:{}};});
+  }
+  removeDuplicates() {
+    if(!this.editable())return;const q=this.dataRange();const rows=[],seen=new Set();let removed=0;
+    for(let r=q.r1+1;r<=q.r2;r++){const cells=[];for(let c=q.c1;c<=q.c2;c++)cells.push(structuredClone(this.sheet.get(r,c)||{raw:''}));const signature=JSON.stringify(cells.map((_,i)=>this.workbook.value(this.sheet,r,q.c1+i)));if(seen.has(signature))removed++;else{seen.add(signature);rows.push({r,cells});}}
+    if(!removed){this.toast('No duplicate data rows found.');return;}
+    this.workbook.transaction('Remove duplicates',()=>{this.workbook.clear(this.sheet,{...q,r1:q.r1+1},true);rows.forEach((row,i)=>row.cells.forEach((cell,j)=>{cell.raw=shiftFormula(cell.raw,q.r1+1+i-row.r,0);this.workbook.setCell(this.sheet,q.r1+1+i,q.c1+j,cell);}));});this.toast(`${removed} duplicate row${removed===1?'':'s'} removed. Header preserved.`);
+  }
+  openDialog(title, body, width = 550) {
+    this.dialog.style.width = width + 'px'; $('#dialog-content').innerHTML = `<div class="dialog-head"><h2>${escapeHTML(title)}</h2><button data-action="close-dialog" aria-label="Close dialog">×</button></div><div class="dialog-body">${body}</div>`;
+    if (!this.dialog.open) this.dialog.showModal(); requestAnimationFrame(() => this.dialog.querySelector('[autofocus]')?.focus());
+  }
+  closeDialog() { if (this.dialog.open) this.dialog.close(); }
+  confirm(title, message, callback, label = 'Continue') {
+    this.openDialog(title, `<p class="help-text">${escapeHTML(message)}</p><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Cancel</button><button class="primary-btn" id="confirm-action">${escapeHTML(label)}</button></div>`);
+    $('#confirm-action').onclick = () => this.errorBoundary(() => { this.closeDialog(); callback(); });
+  }
+  contextMenu(x, y, entries) {
+    const menu = $('#context-menu'); menu.innerHTML = entries.map(entry => entry ? `<button data-action="${entry[0]}" class="${entry[0].startsWith('delete') ? 'danger' : ''}">${escapeHTML(entry[1])}${entry[2] ? `<kbd>${entry[2]}</kbd>` : ''}</button>` : '<hr>').join('');
+    menu.hidden = false; menu.style.left = Math.max(5, Math.min(x, window.innerWidth - menu.offsetWidth - 8)) + 'px'; menu.style.top = Math.max(5, Math.min(y, window.innerHeight - menu.offsetHeight - 8)) + 'px';
+    menu.onclick = () => menu.hidden = true;
+  }
+  menuAt(element, entries) { const box = element?.getBoundingClientRect(); this.contextMenu(box?.left ?? 200, box?.bottom ?? 200, entries); }
+  cellContextMenu(x, y) { this.contextMenu(x,y,[['cut','Cut','Ctrl/⌘ X'],['copy','Copy','Ctrl/⌘ C'],['paste','Paste','Ctrl/⌘ V'],null,['insert-row','Insert row above'],['insert-column','Insert column left'],['delete-row','Delete row'],['delete-column','Delete column'],null,['clear','Clear contents','Delete'],['auto-fit','Auto-fit columns'],['add-note','Add / edit note'],['inspect-formula','Inspect cell'],null,['filter','Filter values…']]); }
+  showFile() {
+    const card=(action,title,desc,image)=>`<button class="file-card" data-action="${action}">${icon(image)}<span><strong>${title}</strong><small>${desc}</small></span></button>`;
+    this.openDialog('Your workspace', `<div class="file-hero"><div class="eyebrow">GRIDLINE / LOCAL FIRST</div><h3>Big ideas.<br>Beautifully organized.</h3><p>A spreadsheet that gives your numbers room to make sense.</p></div><div class="dialog-grid">${card('new','Blank workbook','Start with a clean sheet.','file')}${card('open','Open a workbook','Gridline, XLSX, CSV or TSV.','open')}${card('save','Save a copy','Preserve every Gridline feature.','save')}${card('export','Export your work','Excel workbook or CSV values.','export')}${card('sample','Explore the demo','A fictional revenue operations model.','table')}${card('help','Make yourself at home','Shortcuts, formulas and editing tips.','info')}</div><p class="help-text" style="margin:20px 0 0">No account. No uploads. Workbook data is processed in your browser. Local autosave is specific to this browser and site.</p>`, 620);
+  }
+  showExport() {
+    this.openDialog('Export workbook', `<div class="dialog-grid"><button class="file-card" data-action="save">${icon('save')}<span><strong>Gridline workbook</strong><small>.gridline · Full document fidelity, notes, chart definitions and rules.</small></span></button><button class="file-card" data-action="export-xlsx">${icon('table')}<span><strong>Excel workbook</strong><small>.xlsx · Cells, formulas, basic styles, merges, dimensions and frozen panes.</small></span></button><button class="file-card" data-action="export-csv">${icon('file')}<span><strong>CSV values</strong><small>.csv · Current sheet, values only. No formatting or formulas.</small></span></button><button class="file-card" data-action="print">${icon('print')}<span><strong>Print / Save as PDF</strong><small>Use your browser’s print dialog. Tabular sheet output.</small></span></button></div><p class="help-text">XLSX is a deliberately limited interoperability path, not a lossless Excel round-trip. Use .gridline to retain all features of this app. No files are uploaded.</p>`, 640);
+  }
+  showConditional() {
+    if (!this.editable()) return;
+    this.openDialog('Conditional formatting', `<p class="help-text">Apply a live rule to <b>${rangeAddress(this.selection)}</b>. Formatting updates when formula results change.</p><div class="dialog-grid"><button class="file-card" data-rule="bars">${icon('chart')}<span><strong>Data bars</strong><small>Compare the magnitude of each value.</small></span></button><button class="file-card" data-rule="scale">${icon('conditional')}<span><strong>Green color scale</strong><small>Shade cells from low to high.</small></span></button><button class="file-card" data-rule="positive">${icon('percent')}<span><strong>Positive / negative</strong><small>Green gains and red losses.</small></span></button><button class="file-card" data-rule="greater">${icon('check')}<span><strong>Greater than…</strong><small>Highlight values above a threshold.</small></span></button></div><label class="field-label">Threshold for “Greater than”</label><input id="cf-threshold" class="dialog-input" type="number" value="0"><div class="dialog-actions"><button id="clear-rules" class="secondary-btn">Clear sheet rules</button></div>`);
+    $$('[data-rule]').forEach(button => button.onclick = () => this.errorBoundary(() => { const range = {...this.selection}; [...cellsIn(range)]; const rule={type:button.dataset.rule,range,value:Number($('#cf-threshold').value)}; this.workbook.mutate('Conditional formatting',()=>this.sheet.conditionalRules.push(rule)); this.closeDialog(); }));
+    $('#clear-rules').onclick=()=>{this.workbook.mutate('Clear conditional rules',()=>this.sheet.conditionalRules=[]);this.closeDialog();};
+  }
+  showSort() {
+    if(!this.editable())return;const q=this.dataRange();if(q.r2<=q.r1){this.toast('Select a table or range with data rows.');return;}
+    const options=[];for(let c=q.c1;c<=q.c2;c++)options.push(`<option value="${c}"${c===this.active.c?' selected':''}>${colName(c)} — ${escapeHTML(this.workbook.display(this.sheet,q.r1,c))}</option>`);
+    this.openDialog('Sort range',`<p class="help-text">Sort complete rows in <b>${rangeAddress(q)}</b>. Formula references move relative to their cells.</p><label class="field-label">Sort by column</label><select id="sort-column" class="dialog-input">${options.join('')}</select><label class="field-label">Order</label><select id="sort-order" class="dialog-input"><option value="asc">A to Z / Smallest to largest</option><option value="desc">Z to A / Largest to smallest</option></select><p><label><input type="checkbox" id="sort-header" checked> My data has headers</label></p><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Cancel</button><button id="sort-apply" class="primary-btn">Sort range</button></div>`);
+    $('#sort-apply').onclick=()=>this.errorBoundary(()=>{this.workbook.sort(this.sheet,q,+$('#sort-column').value,$('#sort-order').value==='desc',$('#sort-header').checked);this.closeDialog();});
+  }
+  showFilter() {
+    const q=this.dataRange();if(q.r2<=q.r1){this.toast('Select a table with a header row to filter.');return;}
+    const c=Math.max(q.c1,Math.min(q.c2,this.active.c)), values=[...new Set(Array.from({length:Math.min(q.r2-q.r1,10000)},(_,i)=>this.workbook.display(this.sheet,q.r1+1+i,c)))].sort((a,b)=>a.localeCompare(b));
+    if(values.length>2000){this.toast('This column has more than 2,000 distinct values. Select a smaller range.',true);return;}
+    const current=this.sheet.filters?.criteria?.[c];
+    this.openDialog(`Filter ${colName(c)} — ${this.workbook.display(this.sheet,q.r1,c)}`,`<input id="filter-search" class="dialog-input" placeholder="Search values…" autofocus><div class="panel-actions"><button class="secondary-btn" id="filter-all">Select all</button><button class="secondary-btn" id="filter-none">Select none</button></div><div class="filter-values">${values.map((v,i)=>`<label data-filter-value="${i}"><input type="checkbox" value="${i}" ${!current||current.includes(v)?'checked':''}><span>${escapeHTML(v||'(Blanks)')}</span></label>`).join('')}</div><p class="help-text">The first row remains a header. Multiple column filters combine with AND. SUM includes hidden rows.</p><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Cancel</button><button class="primary-btn" id="filter-apply">Apply filter</button></div>`);
+    $('#filter-search').oninput=e=>$$('[data-filter-value]').forEach(label=>label.hidden=!values[+label.dataset.filterValue].toLowerCase().includes(e.target.value.toLowerCase()));
+    $('#filter-all').onclick=()=>$$('.filter-values input').forEach(i=>i.checked=true);$('#filter-none').onclick=()=>$$('.filter-values input').forEach(i=>i.checked=false);
+    $('#filter-apply').onclick=()=>this.errorBoundary(()=>{
+      const selected=$$('.filter-values input:checked').map(i=>values[+i.value]);
+      this.workbook.mutate('Filter rows',()=>{const criteria={...(this.sheet.filters?.criteria||{}),[c]:selected};this.sheet.filters={range:q,criteria};this.sheet.hiddenRows.clear();for(let r=q.r1+1;r<=q.r2;r++)if(Object.entries(criteria).some(([col,allowed])=>!allowed.includes(this.workbook.display(this.sheet,r,+col))))this.sheet.hiddenRows.add(r);});
+      this.closeDialog();this.toast(`${q.r2-q.r1-this.sheet.hiddenRows.size} of ${q.r2-q.r1} rows visible.`);
+    });
+  }
+  renameSheet() {
+    this.openDialog('Rename worksheet',`<label class="field-label">Worksheet name</label><input id="sheet-name-input" class="dialog-input" value="${escapeHTML(this.sheet.name)}" maxlength="31" autofocus><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Cancel</button><button id="sheet-rename-apply" class="primary-btn">Rename</button></div>`);
+    $('#sheet-rename-apply').onclick=()=>this.errorBoundary(()=>{this.workbook.renameSheet(this.sheet,$('#sheet-name-input').value);this.closeDialog();});
+    $('#sheet-name-input').onkeydown=e=>{if(e.key==='Enter')$('#sheet-rename-apply').click();};
+  }
+  showSheets() {
+    this.openDialog('Worksheets',`<div class="command-list">${this.workbook.sheets.map(s=>`<button data-go-sheet="${escapeHTML(s.id)}">${icon('table')}${escapeHTML(s.name)}<small>${s.cells.size.toLocaleString()} stored cells</small></button>`).join('')}</div><div class="dialog-actions"><button class="primary-btn" id="sheets-add">New worksheet</button></div>`);
+    $$('[data-go-sheet]').forEach(b=>b.onclick=()=>{this.switchSheet(b.dataset.goSheet);this.closeDialog();});$('#sheets-add').onclick=()=>{this.closeDialog();this.run('add-sheet');};
+  }
+  showFunctions() {
+    this.openDialog('Function library',`<input id="function-search" class="dialog-input" placeholder="Find a function — SUM, IF, XLOOKUP…" autofocus><p class="help-text">${FUNCTIONS.size} function names supported. Select one to start editing the active cell. Arguments use commas; ranges use A1:B10 notation.</p><div id="function-list" class="command-list"></div>`);
+    const render=()=>{const query=$('#function-search').value.toLowerCase();$('#function-list').innerHTML=[...FUNCTIONS].filter(([name,fn])=>name.toLowerCase().includes(query)||fn.description.toLowerCase().includes(query)).map(([name,fn])=>`<button data-function="${name}">${icon('function')}<b style="min-width:100px;text-align:left">${name}</b><small>${escapeHTML(fn.description)}</small></button>`).join('');$$('[data-function]').forEach(b=>b.onclick=()=>{this.closeDialog();this.startEdit(`=${b.dataset.function}(`);});};
+    $('#function-search').oninput=render;render();
+  }
+  showCommands() {
+    this.openDialog('Find a command',`<input id="command-search" class="dialog-input" placeholder="What would you like to do?" autofocus><div id="command-list" class="command-list"></div>`,590);
+    const render=()=>{const query=$('#command-search').value.toLowerCase();$('#command-list').innerHTML=COMMANDS.filter(c=>c[1].toLowerCase().includes(query)).map(c=>`<button data-command="${c[0]}">${icon(c[2])}${escapeHTML(c[1])}<small>${c[3]}</small></button>`).join('');$$('[data-command]').forEach(b=>b.onclick=()=>{this.closeDialog();this.errorBoundary(()=>this.run(b.dataset.command));});};$('#command-search').oninput=render;render();
+  }
+  showNames() {
+    const qualified=`'${this.sheet.name.replaceAll("'","''")}'!${rangeAddress(this.selection)}`;
+    this.openDialog('Named ranges',`<p class="help-text">Use names in formulas, for example <b>=RevenueTarget*1.2</b>.</p><div class="result-list">${Object.entries(this.workbook.names).map(([name,ref])=>`<div class="metric-line"><strong>${escapeHTML(name)}</strong><span>${escapeHTML(ref)}</span></div>`).join('')||'<p class="help-text">No named ranges yet.</p>'}</div><label class="field-label">Name</label><input id="range-name" class="dialog-input" placeholder="RevenueTarget" autofocus><label class="field-label">Refers to</label><input id="range-reference" class="dialog-input" value="${escapeHTML(qualified)}"><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Close</button><button class="primary-btn" id="name-define">Define name</button></div>`,600);
+    $('#name-define').onclick=()=>this.errorBoundary(()=>{const name=$('#range-name').value.trim().toUpperCase(),ref=$('#range-reference').value.trim().replace(/^=/,'');if(!/^[A-Z_][A-Z0-9_]{0,63}$/.test(name)||parseAddress(name)||['TRUE','FALSE'].includes(name))throw new Error('Use a name beginning with a letter or underscore, not a cell address.');const match=/^(?:'((?:[^']|'')+)'|([^!]+))!([^!]+)$/.exec(ref);if(!match||!this.workbook.sheetByName((match[1]||match[2]).replaceAll("''","'"))||!parseRange(match[3]))throw new Error('Use a valid sheet-qualified reference, for example Sales!B2:B20.');this.workbook.mutate('Define name',()=>this.workbook.names[name]=ref);this.showNames();});
+  }
+  openPanel(type,title,body) {this.panelType=type;const panel=$('#side-panel');panel.hidden=false;panel.innerHTML=`<div class="panel-heading"><span>${title}</span><button data-action="close-panel" aria-label="Close panel">×</button></div>${body}`;this.renderer.resize();}
+  closePanel() {this.panelType=null;$('#side-panel').hidden=true;this.renderer.resize();this.host.focus();}
+  showFind() {
+    this.openPanel('find','Find & replace',`<label class="field-label">Find in this sheet</label><input id="find-query" class="panel-input" placeholder="Search values and formulas…"><label class="field-label">Replace with</label><input id="replace-query" class="panel-input" placeholder="Replacement text"><div class="panel-actions"><button class="primary-btn" id="find-next">Find next</button><button class="secondary-btn" id="replace-all">Replace all</button></div><p class="help-text">Search matches displayed values and original input. Replace edits original input, including formulas. Results are limited to 200.</p><div id="find-count" class="badge">Enter a search term</div><div class="result-list" id="find-results"></div>`);
+    let matches=[],next=-1;
+    const search=()=>{const query=$('#find-query').value.toLowerCase();matches=[];if(query)for(const [key,cell]of this.sheet.cells){const [r,c]=key.split(',').map(Number);const display=this.workbook.display(this.sheet,r,c);if(cell.raw.toLowerCase().includes(query)||display.toLowerCase().includes(query)){matches.push({r,c,display});if(matches.length>=200)break;}}matches.sort((a,b)=>a.r-b.r||a.c-b.c);next=-1;$('#find-count').textContent=query?`${matches.length}${matches.length===200?'+':''} matches`:'Enter a search term';$('#find-results').innerHTML=matches.map((m,i)=>`<button class="find-result" data-result="${i}"><b>${address(m.r,m.c)}</b><span>${escapeHTML(m.display.slice(0,120))}</span></button>`).join('');$$('[data-result]').forEach(b=>b.onclick=()=>{const m=matches[+b.dataset.result];this.goto(m.r,m.c);});};
+    $('#find-query').oninput=search;$('#find-next').onclick=()=>{if(matches.length){const m=matches[++next%matches.length];this.goto(m.r,m.c);}};
+    $('#find-query').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('#find-next').click();}};
+    $('#replace-all').onclick=()=>this.errorBoundary(()=>{if(!this.editable())return;const query=$('#find-query').value,replace=$('#replace-query').value;if(!query)return;let count=0;this.workbook.transaction('Replace all',()=>{for(const [key,cell]of this.sheet.cells){if(!cell.raw.includes(query))continue;const [r,c]=key.split(',').map(Number);this.workbook.setRaw(this.sheet,r,c,cell.raw.split(query).join(replace));count++;}});this.toast(`Replaced exact, case-sensitive matches in ${count} cells.`);search();});$('#find-query').focus();
+  }
+  showNotes() {
+    const notes=[];for(const [key,cell]of this.sheet.cells)if(cell.note){const[r,c]=key.split(',').map(Number);notes.push({r,c,text:cell.note});}
+    this.openPanel('notes','Worksheet notes',`<button class="primary-btn" data-action="add-note">${icon('plus')} Add note at ${address(this.active.r,this.active.c)}</button><p class="help-text">Local cell annotations. Notes are stored in .gridline workbooks, not shared with other people.</p>${notes.map(note=>`<div class="note-card"><div class="note-card-header"><button data-note-location="${address(note.r,note.c)}">${address(note.r,note.c)}</button><button data-action="delete-note" data-row="${note.r}" data-col="${note.c}" title="Delete note">×</button></div><p>${escapeHTML(note.text)}</p></div>`).join('')||'<div class="empty-panel">A little context goes a long way.<br>Add a note to any cell.</div>'}`);
+    $$('[data-note-location]').forEach(b=>b.onclick=()=>{const p=parseAddress(b.dataset.noteLocation);this.goto(p.r,p.c);});
+  }
+  addNote() {
+    if(!this.editable())return;const {r,c}=this.active;
+    this.openDialog(`Note at ${address(r,c)}`,`<textarea id="note-text" class="dialog-input" style="height:155px;resize:vertical" maxlength="10000" autofocus placeholder="Add context, a reminder, or a question…">${escapeHTML(this.sheet.get(r,c)?.note||'')}</textarea><p class="help-text">This note is local to your workbook.</p><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Cancel</button><button class="primary-btn" id="note-save">Save note</button></div>`);
+    $('#note-save').onclick=()=>{this.workbook.setCell(this.sheet,r,c,{note:$('#note-text').value.trim()||undefined});this.closeDialog();this.showNotes();};
+  }
+  showCellInspector() {
+    const cell=this.sheet.get(this.active.r,this.active.c),value=this.workbook.value(this.sheet,this.active.r,this.active.c),id=this.workbook.engine.id(this.sheet,this.active.r,this.active.c),deps=[...(this.workbook.engine.dependencies.get(id)||[])];
+    this.openPanel('inspect','Cell inspector',`<div class="eyebrow">${escapeHTML(this.sheet.name)} / ${address(this.active.r,this.active.c)}</div><label class="field-label">Original input</label><pre style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px">${escapeHTML(cell?.raw||'(empty)')}</pre><label class="field-label">Calculated value</label><pre style="white-space:pre-wrap">${escapeHTML(value instanceof FormulaError?value.code:value??'(blank)')}</pre>${value instanceof FormulaError?`<p class="help-text">${escapeHTML(value.message)}</p>`:''}<div class="metric-line"><span>Value type</span><strong>${value instanceof FormulaError?'error':value===null?'blank':typeof value}</strong></div><div class="metric-line"><span>Direct dependencies</span><strong>${deps.length}</strong></div><label class="field-label">References read during evaluation</label><div class="help-text">${deps.slice(0,100).map(d=>{const [sid,key]=d.split('!'),[r,c]=key.split(',').map(Number);return escapeHTML((this.workbook.sheets.find(s=>s.id===sid)?.name||sid)+'!'+address(r,c));}).join('<br>')||'No cell dependencies.'}</div>`);
+  }
+  showPerformance() {
+    this.openPanel('performance','Engine diagnostics',`<div class="badge">${this.renderer.backend==='webgpu'?'WEBGPU / INSTANCED QUADS':'CANVAS2D / FALLBACK'}</div><p class="help-text">${this.renderer.backend==='webgpu'?'Cells and glyph masks are rendered through one ordered instanced draw call. Only the visible grid is drawn.':'The same viewport display list is rendered through Canvas2D because WebGPU is unavailable or was disabled.'}</p><div id="perf-metrics"></div><p class="help-text">Frame time below is CPU preparation and command submission, not GPU completion time or an FPS benchmark. Logical grid capacity does not imply tested million-row calculation throughput.</p><button class="secondary-btn" id="perf-test">Create a 10,000-row test sheet</button><p class="help-text">Adds 80,008 stored cells with formulas. Your existing worksheets are kept.</p>${this.renderer.fallbackReason?`<p class="help-text">Fallback reason: ${escapeHTML(this.renderer.fallbackReason)}</p>`:''}`);
+    $('#perf-test').onclick=()=>this.errorBoundary(()=>{const before=performance.now();this.workbook.mutate('Create performance sheet',()=>{const name=this.workbook.uniqueSheetName('Performance test');const template=new Workbook().activeSheet;template.name=name;template.freezeRows=1;this.workbook.sheets.push(template);this.workbook.activeSheetId=template.id;['Index','Units','Price','Revenue','Cost','Profit','Margin','Contribution'].forEach((v,c)=>template.cells.set(keyOf(0,c),{raw:v,style:{bold:true,fill:'#176b4a',color:'#ffffff'}}));for(let r=1;r<=10000;r++){const n=r+1;const row=[r,1+r%100,25+r%75,`=B${n}*C${n}`,`=D${n}*0.62`,`=D${n}-E${n}`,`=IFERROR(F${n}/D${n},0)`,`=D${n}*0.1`];row.forEach((v,c)=>template.cells.set(keyOf(r,c),{raw:String(v),style:{format:c===6?'percent':c>=3?'number':'general'}}));}});this.renderer.scrollX=this.renderer.scrollY=0;this.goto(0,0);this.toast(`Created 10,000 rows in ${(performance.now()-before).toFixed(0)} ms on this browser.`);});
+    this.refreshPerformance();
+  }
+  refreshPerformance() {
+    const metrics=$('#perf-metrics');if(!metrics)return;const formulaCount=[...this.sheet.cells.values()].filter(c=>c.raw.startsWith('=')).length;
+    const lines=[['Backend',this.renderer.backend],['Logical sheet','1,048,576 × 16,384'],['Stored cells',this.sheet.cells.size.toLocaleString()],['Formula cells',formulaCount.toLocaleString()],['Visible cells',this.renderer.visibleCellCount],['Last frame CPU',this.renderer.lastFrameMs.toFixed(2)+' ms'],['Instanced quads',this.renderer.backend==='webgpu'?this.renderer.instanceCount.toLocaleString():'—'],['Glyphs cached',this.renderer.atlas.map.size],['Cached formula results',this.workbook.engine.cache.size],['Cell evaluations',this.workbook.engine.evaluations.toLocaleString()]];
+    metrics.innerHTML=lines.map(([label,value])=>`<div class="metric-line"><span>${label}</span><strong>${escapeHTML(value)}</strong></div>`).join('');
+  }
+  showHelp() {
+    const shortcuts=[['Navigate / extend selection','Arrow keys / Shift + arrows'],['Jump to data edge','Ctrl/⌘ + arrow'],['First cell / last used cell','Ctrl/⌘ + Home / End'],['Edit active cell','F2 or start typing'],['Apply edit / cancel','Enter / Escape'],['Move across cells','Tab / Shift + Tab'],['Insert line break while editing','Alt + Enter'],['Cycle absolute formula reference','F4 while editing'],['Copy / cut / paste','Ctrl/⌘ + C / X / V'],['Undo / redo','Ctrl/⌘ + Z / Shift + Z'],['Fill down / right','Ctrl/⌘ + D / R'],['Bold / italic / underline','Ctrl/⌘ + B / I / U'],['Find and replace','Ctrl/⌘ + F'],['AutoSum','Alt + ='],['Command search','Ctrl/⌘ + K'],['Export full-fidelity workbook','Ctrl/⌘ + S'],['Open a workbook','Ctrl/⌘ + O'],['Print','Ctrl/⌘ + P'],['Show formula input','Ctrl/⌘ + `']];
+    this.openDialog('Make yourself at home',`<p class="help-text">Double-click a cell to edit. Drag to select a range. Drag the small green square at the selection’s lower-right corner to fill. Two numeric seed cells create a sequence. Resize columns and rows by dragging header boundaries; double-click a column boundary to auto-fit.</p><table class="help-table">${shortcuts.map(([label,key])=>`<tr><td>${label}</td><td><kbd>${key}</kbd></td></tr>`).join('')}</table><h3>A few formulas to try</h3><p class="help-text"><code>=SUM(D12:F12)</code><br><code>=IF(G12&gt;=H12,"Above target","Needs focus")</code><br><code>=XLOOKUP("Enterprise",B12:B19,G12:G19)</code><br><code>='Sales data'!H2 * Assumptions!$B$3</code></p>`,680);
+  }
+  showAbout() {
+    this.openDialog('Gridline',`<div class="file-hero"><div class="eyebrow">VERSION 0.1 / ENGINEERING PREVIEW</div><h3>A clearer way to work.</h3><p>A working, local-first spreadsheet built with plain JavaScript, HTML and CSS. No application framework, cloud backend, runtime dependencies, or evaluation of formula strings as JavaScript.</p></div><h3>Under the hood</h3><p class="help-text">Sparse cell storage, ${FUNCTIONS.size} registered function names, a Pratt-parser formula AST, dependency invalidation, transactional cell edits, undo/redo, viewport culling, frozen panes, and an instanced WebGPU renderer with a cached glyph-mask atlas. Native text inputs handle editing.</p><h3>Boundaries of this build</h3><p class="help-text">This is not feature-equivalent to Microsoft Excel. VBA, Power Query, pivot tables, dynamic-array spills, collaboration, advanced print layout, rich cell text, full international text shaping and complete Excel formula/file compatibility are not implemented. The grid has a 200,000-cell range-operation limit and a 256-cell calculation-stack limit. Large snapshots and calculation run on the main thread. Charts use SVG overlays. Basic XLSX exchange is not lossless; use .gridline for full app fidelity.</p><p class="help-text">Sheet read-only mode is a UI editing guard, not security or encryption. Cut/paste moves values and formulas but does not retarget references from other cells. Structural row/column edits clear charts and conditional rules on that sheet to avoid stale range metadata.</p><p class="help-text">Gridline is an independent implementation with an Excel-inspired interface. It is not affiliated with Microsoft. All demo business data is fictional.</p>`,670);
+  }
+  showChart(type='column') {
+    if(!this.editable())return;const q=this.dataRange();
+    this.openDialog('Insert a chart',`<label class="field-label">Chart title</label><input id="chart-title-input" class="dialog-input" value="${type==='line'?'A view of the trend':'Your data, visualized'}" autofocus><label class="field-label">Chart type</label><select id="chart-type-input" class="dialog-input">${[['column','Column'],['line','Line'],['bar','Horizontal bar'],['donut','Doughnut']].map(([v,t])=>`<option value="${v}"${v===type?' selected':''}>${t}</option>`).join('')}</select><label class="field-label">Source range</label><input id="chart-range-input" class="dialog-input" value="${rangeAddress(q)}"><p class="help-text">The first row supplies headers. The first column supplies category labels; the second supplies numeric values. Up to 100 data points are shown. Changes to source cells update the chart.</p><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Cancel</button><button id="chart-create" class="primary-btn">Insert chart</button></div>`);
+    $('#chart-create').onclick=()=>this.errorBoundary(()=>{const range=parseRange($('#chart-range-input').value);if(!range||range.r2<=range.r1||range.c2<=range.c1)throw new Error('Choose a range with at least two columns and a header plus data row.');const chart={id:'chart-'+Date.now().toString(36),title:$('#chart-title-input').value.trim()||'Chart',subtitle:rangeAddress(range),type:$('#chart-type-input').value,range,row:Math.min(MAX_ROWS-20,range.r2+3),col:range.c1,width:550,height:300};this.workbook.mutate('Insert chart',()=>this.sheet.charts.push(chart));this.closeDialog();this.goto(chart.row,chart.col);});
+  }
+  chartData(chart) {
+    const q=chart.range;
+    if(chart.aggregate){const labels=[],values=[];for(let c=q.c1;c<=q.c2;c++){labels.push(this.workbook.display(this.sheet,q.r1,c));let total=0;for(let r=q.r1+1;r<=Math.min(q.r2,q.r1+10000);r++){const value=this.workbook.value(this.sheet,r,c);if(typeof value==='number')total+=value;}values.push(total);}return{labels,values};}
+    const labels=[],values=[];for(let r=q.r1+1;r<=Math.min(q.r2,q.r1+100);r++){const value=this.workbook.value(this.sheet,r,chart.valueColumn??q.c1+1);if(typeof value==='number'){labels.push(this.workbook.display(this.sheet,r,chart.labelColumn??q.c1));values.push(value);}}return{labels,values};
+  }
+  chartSVG(chart) {
+    const {labels,values}=this.chartData(chart),W=550,H=Math.max(130,chart.height-60),muted=this.renderer.dark?'#97afa0':'#8ca093',text=this.renderer.dark?'#d6e5da':'#597363';
+    if(!values.length)return `<svg class="chart-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="No numeric chart data"><text x="${W/2}" y="${H/2}" text-anchor="middle" fill="${muted}" font-size="12">Select a label column and a numeric value column.</text></svg>`;
+    const short=n=>Math.abs(n)>=1000000?(n/1000000).toFixed(1)+'m':Math.abs(n)>=1000?(n/1000).toFixed(0)+'k':String(Math.round(n));
+    const palette=['#247651','#559b73','#8dbaa0','#bad5c0','#d9e7ce','#9ba77c','#cfb572','#a9c2b0'];let body='';
+    if(chart.type==='bar'){
+      const n=Math.min(8,values.length),max=Math.max(...values.map(Math.abs),1),rowH=(H-20)/n;
+      for(let i=0;i<n;i++){const y=9+i*rowH;body+=`<text x="20" y="${y+rowH*.61}" font-size="10" fill="${text}">${escapeHTML(labels[i].slice(0,18))}</text><rect x="138" y="${y+rowH*.22}" width="${330*Math.abs(values[i])/max}" height="${rowH*.48}" rx="2" fill="${palette[i%palette.length]}"/><text x="520" y="${y+rowH*.61}" text-anchor="end" font-size="10" fill="${text}">${short(values[i])}</text>`;}
+    }else if(chart.type==='donut'){
+      const positive=values.map(v=>Math.max(0,v)),total=positive.reduce((a,b)=>a+b,0)||1;let angle=-Math.PI/2;const cx=H*.6,cy=H/2,r=Math.min(74,H*.4);
+      positive.forEach((v,i)=>{const end=angle+v/total*Math.PI*2,x1=cx+r*Math.cos(angle),y1=cy+r*Math.sin(angle),x2=cx+r*Math.cos(end),y2=cy+r*Math.sin(end);if(v/total>.999)body+=`<circle cx="${cx}" cy="${cy}" r="${r}" stroke="${palette[i%palette.length]}" stroke-width="27" fill="none"/>`;else if(v)body+=`<path d="M${x1},${y1} A${r},${r} 0 ${end-angle>Math.PI?1:0} 1 ${x2},${y2}" fill="none" stroke="${palette[i%palette.length]}" stroke-width="27"/>`;angle=end;if(i<8)body+=`<rect x="260" y="${20+i*21}" width="8" height="8" rx="2" fill="${palette[i%palette.length]}"/><text x="280" y="${28+i*21}" fill="${text}" font-size="10">${escapeHTML(labels[i].slice(0,24))}</text><text x="520" y="${28+i*21}" fill="${text}" text-anchor="end" font-size="10">${(v/total*100).toFixed(1)}%</text>`;});body+=`<text x="${cx}" y="${cy+5}" text-anchor="middle" font-size="22" font-weight="600" fill="${text}">${short(total)}</text>`;
+    }else{
+      const x0=58,y0=H-28,top=21,plotW=467,plotH=y0-top,lo=Math.min(0,...values),hi=Math.max(1,...values)*1.12,span=hi-lo,y=v=>y0-(v-lo)/span*plotH,zero=y(0),step=plotW/values.length;
+      for(let i=0;i<=3;i++){const value=lo+span*i/3,py=y(value);body+=`<line x1="${x0}" x2="${W-20}" y1="${py}" y2="${py}" stroke="${this.renderer.dark?'#344c3d':'#eaf0eb'}"/><text x="${x0-10}" y="${py+3}" text-anchor="end" font-size="9" fill="${muted}">${short(value)}</text>`;}
+      if(chart.type==='line'){const points=values.map((v,i)=>`${x0+step*(i+.5)},${y(v)}`);body+=`<path d="M${x0+step*.5},${zero} L${points.join(' L')} L${x0+step*(values.length-.5)},${zero} Z" fill="#39875e" opacity=".08"/><polyline points="${points.join(' ')}" fill="none" stroke="#36845c" stroke-width="2.5"/>`;values.forEach((v,i)=>body+=`<circle cx="${x0+step*(i+.5)}" cy="${y(v)}" r="3.5" fill="#36845c" stroke="white" stroke-width="2"/>`);}
+      else values.forEach((v,i)=>{const width=Math.min(78,step*.54);body+=`<rect x="${x0+step*(i+.5)-width/2}" y="${Math.min(zero,y(v))}" width="${width}" height="${Math.abs(zero-y(v))}" rx="3" fill="${i===values.length-1?'#247651':'#b3cdbb'}"/>`;if(values.length<=12)body+=`<text x="${x0+step*(i+.5)}" y="${y(v)-8}" text-anchor="middle" font-size="11" font-weight="600" fill="${text}">${short(v)}</text>`;});
+      labels.forEach((label,i)=>{if(values.length<=12||i%Math.ceil(values.length/12)===0)body+=`<text x="${x0+step*(i+.5)}" y="${H-8}" text-anchor="middle" font-size="10" fill="${muted}">${escapeHTML(label.slice(0,13))}</text>`;});
+    }
+    return `<svg class="chart-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${escapeHTML(chart.title+': '+labels.map((l,i)=>l+' '+values[i]).join(', '))}">${body}</svg>`;
+  }
+  renderCharts() {
+    const layer=$('#chart-layer');layer.innerHTML=this.sheet.charts.map(chart=>`<div class="chart-card" id="${escapeHTML(chart.id)}" data-chart-id="${escapeHTML(chart.id)}"><div class="chart-header"><div><div class="chart-title">${escapeHTML(chart.title)}</div><div class="chart-subtitle">${escapeHTML(chart.subtitle||rangeAddress(chart.range))}</div></div><button data-action="remove-chart" data-chart="${escapeHTML(chart.id)}" title="Remove chart" aria-label="Remove chart">×</button></div>${this.chartSVG(chart)}</div>`).join('');
+    layer.querySelectorAll('.chart-header').forEach(header=>header.onpointerdown=e=>{
+      if(e.target.closest('button')||!this.editable())return;e.preventDefault();e.stopPropagation();const card=header.closest('[data-chart-id]'),chart=this.sheet.charts.find(c=>c.id===card.dataset.chartId),startX=e.clientX,startY=e.clientY,ox=chart.offsetX||0,oy=chart.offsetY||0;let nx=ox,ny=oy;header.setPointerCapture(e.pointerId);
+      const move=event=>{nx=ox+(event.clientX-startX)/this.renderer.zoom;ny=oy+(event.clientY-startY)/this.renderer.zoom;chart.offsetX=nx;chart.offsetY=ny;this.positionCharts();};
+      const up=()=>{header.removeEventListener('pointermove',move);header.removeEventListener('pointerup',up);header.removeEventListener('pointercancel',up);chart.offsetX=ox;chart.offsetY=oy;this.workbook.mutate('Move chart',()=>{chart.offsetX=nx;chart.offsetY=ny;});};header.addEventListener('pointermove',move);header.addEventListener('pointerup',up);header.addEventListener('pointercancel',up);
+    });this.positionCharts();
+  }
+  positionCharts() {
+    const z=this.renderer.zoom, frozen=this.renderer.frozenSize(); $('#chart-layer').style.clipPath=`inset(${frozen.y}px 0 0 ${frozen.x}px)`;
+    for(const chart of this.sheet.charts){const el=document.getElementById(chart.id);if(!el)continue;const rect=this.renderer.cellRect(chart.row,chart.col,false),x=rect.x-this.renderer.headerW+(chart.offsetX||0)*z,y=rect.y-this.renderer.headerH+(chart.offsetY||0)*z,w=chart.width*z,h=chart.height*z;el.style.left=x+'px';el.style.top=y+'px';el.style.width=w+'px';el.style.height=h+'px';el.style.display=x+w<0||y+h<0||x>this.renderer.width||y>this.renderer.height?'none':'block';}
+  }
+  printSheet(selected=false) {
+    this.closeDialog();const q=selected?this.selection:this.sheet.usedRange();if((q.r2-q.r1+1)*(q.c2-q.c1+1)>10000)throw new Error('Print supports at most 10,000 cells. Select a smaller range.');
+    let rows='';for(let r=q.r1;r<=q.r2;r++){if(this.sheet.hiddenRows.has(r))continue;let cells='';for(let c=q.c1;c<=q.c2;c++){const merge=this.sheet.mergeAt(r,c);if(merge&&(r!==merge.r1||c!==merge.c1))continue;const style=this.sheet.get(r,c)?.style||{};const safeColor=color=>/^#[0-9a-f]{6}$/i.test(color)?color:'inherit';cells+=`<td${merge?` rowspan="${Math.min(merge.r2,q.r2)-r+1}" colspan="${Math.min(merge.c2,q.c2)-c+1}"`:''} style="background:${safeColor(style.fill)};color:${safeColor(style.color)};font-weight:${style.bold?'bold':'normal'};text-align:${['left','center','right'].includes(style.align)?style.align:typeof this.workbook.value(this.sheet,r,c)==='number'?'right':'left'}">${escapeHTML(this.workbook.display(this.sheet,r,c))}</td>`;}rows+='<tr>'+cells+'</tr>';}
+    $('#print-area').innerHTML=`<h1>${escapeHTML(this.workbook.title)}</h1><p class="print-meta">${escapeHTML(this.sheet.name)} · ${rangeAddress(q)} · Printed from Gridline</p><table>${rows}</table>`;window.print();
+  }
+}
+const app = new GridlineApp();
+// Intentional diagnostics/embedding API. The model remains independent of the view.
+window.gridline = app;
+
+window.Gridline = Object.freeze({ version: '0.1.0', Workbook, GridRenderer, exportXLSX, importXLSX, parseDelimited, serializeDelimited, exportCSV, createSampleWorkbook });
+
+return {  };
+})();
+
+})();

@@ -1,0 +1,225 @@
+{
+  "harness": "inline opaque origin, in-memory Storage fixture",
+  "browser": "143.0.7499.4",
+  "backend": {
+    "backend": "canvas2d",
+    "reason": "WebGPU is not exposed by this browser."
+  },
+  "passed": 33,
+  "checks": [
+    {
+      "name": "Standalone app boots without an uncaught exception",
+      "passed": true,
+      "detail": []
+    },
+    {
+      "name": "Demo total is calculated",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Demo has three sheets and two chart overlays",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Typing commits a real numeric cell",
+      "passed": true,
+      "detail": 200000
+    },
+    {
+      "name": "Editing recalculates dependent total",
+      "passed": true,
+      "detail": 2219000
+    },
+    {
+      "name": "Keyboard undo restores both input and calculated total",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Keyboard redo reapplies the transaction",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Formula bar parses, commits, and calculates",
+      "passed": true,
+      "detail": 409000
+    },
+    {
+      "name": "New worksheet command creates a sheet",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Clipboard paste event enters a rectangular range",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Pasted formulas calculate",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Fill-down shifts relative references",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Internal clipboard fallback preserves rectangular values",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Internal formula copy translates references",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Ribbon formatting applies to the selection",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Worksheet rename dialog updates model and tab",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Freeze panes uses active row and column",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Cell notes persist into the model and panel",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Sorting preserves header and reorders data rows",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Value filters hide nonmatching rows",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Clear filters restores visibility",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Find and replace edits matching cells",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "XLSX export/import round-trip preserves calculated values",
+      "passed": true,
+      "detail": {
+        "bytes": 121828,
+        "sheets": 3,
+        "mismatches": [],
+        "mergeCount": 24,
+        "originalMerges": 24,
+        "freeze": 1,
+        "name": "Assumptions!$B$3",
+        "style": {
+          "format": "general",
+          "bold": true,
+          "italic": false,
+          "underline": false,
+          "fontSize": 27,
+          "color": "#223E2F",
+          "wrap": false
+        },
+        "columns": 13,
+        "warnings": [
+          "XLSX import supports cell values, formulas, basic styles, dimensions, merged cells and frozen panes. Charts, pivots, macros, advanced formatting and external links are not imported."
+        ]
+      }
+    },
+    {
+      "name": "XLSX round-trip preserves basic workbook structures",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Native DEFLATE decompression imports a compressed XLSX",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Unsupported 1904 date-system files are rejected explicitly",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Autosave writes a restorable workbook snapshot to Storage interface",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Stress sheet creates 80,008 sparse cells",
+      "passed": true,
+      "detail": {
+        "wall_ms": 303.04
+      }
+    },
+    {
+      "name": "Virtualized scrolling reaches row 10,001 with correct formulas",
+      "passed": true,
+      "detail": {
+        "revenue": 50,
+        "contribution": 5
+      }
+    },
+    {
+      "name": "Stress view renders only its viewport",
+      "passed": true,
+      "detail": {
+        "visibleCells": 576,
+        "lastFrameCPUms": 4.400000000008731,
+        "storedCells": 80008,
+        "active": {
+          "r": 10000,
+          "c": 3
+        }
+      }
+    },
+    {
+      "name": "Theme toggle updates renderer state",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Zoom command updates the viewport transform",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Browser interactions produce no uncaught JavaScript errors",
+      "passed": true,
+      "detail": []
+    }
+  ],
+  "stressMetrics": {
+    "visibleCells": 576,
+    "lastFrameCPUms": 4.400000000008731,
+    "storedCells": 80008,
+    "active": {
+      "r": 10000,
+      "c": 3
+    }
+  },
+  "uncaughtErrors": [],
+  "notes": [
+    "GPU execution is verified only when backend is webgpu.",
+    "CPU frame measurement is not GPU completion time or a cross-machine benchmark.",
+    "In-memory storage fixture does not validate real browser persistence."
+  ]
+}

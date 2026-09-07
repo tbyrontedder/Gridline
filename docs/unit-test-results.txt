@@ -1,0 +1,752 @@
+
+> gridline@0.1.0 test
+> node --test tests/*.test.js
+
+TAP version 13
+# Subtest: formula =1+2*3
+ok 1 - formula =1+2*3
+  ---
+  duration_ms: 3.924204
+  type: 'test'
+  ...
+# Subtest: formula =(1+2)*3
+ok 2 - formula =(1+2)*3
+  ---
+  duration_ms: 0.386053
+  type: 'test'
+  ...
+# Subtest: formula =2^3^2
+ok 3 - formula =2^3^2
+  ---
+  duration_ms: 0.28482
+  type: 'test'
+  ...
+# Subtest: formula =-2^2
+ok 4 - formula =-2^2
+  ---
+  duration_ms: 0.176674
+  type: 'test'
+  ...
+# Subtest: formula =50%*240
+ok 5 - formula =50%*240
+  ---
+  duration_ms: 0.21209
+  type: 'test'
+  ...
+# Subtest: formula ="hello"&" "&"world"
+ok 6 - formula ="hello"&" "&"world"
+  ---
+  duration_ms: 0.166378
+  type: 'test'
+  ...
+# Subtest: formula ="a"="A"
+ok 7 - formula ="a"="A"
+  ---
+  duration_ms: 128.897118
+  type: 'test'
+  ...
+# Subtest: formula =5<>4
+ok 8 - formula =5<>4
+  ---
+  duration_ms: 0.270142
+  type: 'test'
+  ...
+# Subtest: formula =3<=3
+ok 9 - formula =3<=3
+  ---
+  duration_ms: 0.528197
+  type: 'test'
+  ...
+# Subtest: formula =SUM(1,2,3)
+ok 10 - formula =SUM(1,2,3)
+  ---
+  duration_ms: 0.725269
+  type: 'test'
+  ...
+# Subtest: formula =AVERAGE(2,4,9)
+ok 11 - formula =AVERAGE(2,4,9)
+  ---
+  duration_ms: 0.359578
+  type: 'test'
+  ...
+# Subtest: formula =MIN(9,2,-3)
+ok 12 - formula =MIN(9,2,-3)
+  ---
+  duration_ms: 0.165742
+  type: 'test'
+  ...
+# Subtest: formula =MAX(9,2,-3)
+ok 13 - formula =MAX(9,2,-3)
+  ---
+  duration_ms: 0.135319
+  type: 'test'
+  ...
+# Subtest: formula =PRODUCT(2,3,4)
+ok 14 - formula =PRODUCT(2,3,4)
+  ---
+  duration_ms: 0.11884
+  type: 'test'
+  ...
+# Subtest: formula =COUNT(1,2,"x")
+ok 15 - formula =COUNT(1,2,"x")
+  ---
+  duration_ms: 0.12643
+  type: 'test'
+  ...
+# Subtest: formula =COUNTA(1,"x","")
+ok 16 - formula =COUNTA(1,"x","")
+  ---
+  duration_ms: 0.189558
+  type: 'test'
+  ...
+# Subtest: formula =MEDIAN(2,9,3,6)
+ok 17 - formula =MEDIAN(2,9,3,6)
+  ---
+  duration_ms: 0.140761
+  type: 'test'
+  ...
+# Subtest: formula =ABS(-3)
+ok 18 - formula =ABS(-3)
+  ---
+  duration_ms: 0.09424
+  type: 'test'
+  ...
+# Subtest: formula =SQRT(81)
+ok 19 - formula =SQRT(81)
+  ---
+  duration_ms: 0.08706
+  type: 'test'
+  ...
+# Subtest: formula =POWER(2,10)
+ok 20 - formula =POWER(2,10)
+  ---
+  duration_ms: 0.090979
+  type: 'test'
+  ...
+# Subtest: formula =MOD(-3,2)
+ok 21 - formula =MOD(-3,2)
+  ---
+  duration_ms: 0.123926
+  type: 'test'
+  ...
+# Subtest: formula =INT(-1.2)
+ok 22 - formula =INT(-1.2)
+  ---
+  duration_ms: 0.076308
+  type: 'test'
+  ...
+# Subtest: formula =ROUND(-1.25,1)
+ok 23 - formula =ROUND(-1.25,1)
+  ---
+  duration_ms: 0.128659
+  type: 'test'
+  ...
+# Subtest: formula =ROUND(125,-1)
+ok 24 - formula =ROUND(125,-1)
+  ---
+  duration_ms: 0.15762
+  type: 'test'
+  ...
+# Subtest: formula =ROUNDUP(-1.21,1)
+ok 25 - formula =ROUNDUP(-1.21,1)
+  ---
+  duration_ms: 0.08362
+  type: 'test'
+  ...
+# Subtest: formula =ROUNDDOWN(-1.29,1)
+ok 26 - formula =ROUNDDOWN(-1.29,1)
+  ---
+  duration_ms: 0.069689
+  type: 'test'
+  ...
+# Subtest: formula =TRUNC(-1.8)
+ok 27 - formula =TRUNC(-1.8)
+  ---
+  duration_ms: 0.067533
+  type: 'test'
+  ...
+# Subtest: formula =IF(FALSE,1/0,42)
+ok 28 - formula =IF(FALSE,1/0,42)
+  ---
+  duration_ms: 0.376461
+  type: 'test'
+  ...
+# Subtest: formula =IF(TRUE,42,UNKNOWN())
+ok 29 - formula =IF(TRUE,42,UNKNOWN())
+  ---
+  duration_ms: 0.237624
+  type: 'test'
+  ...
+# Subtest: formula =IF(FALSE,1)
+ok 30 - formula =IF(FALSE,1)
+  ---
+  duration_ms: 0.101499
+  type: 'test'
+  ...
+# Subtest: formula =IFERROR(1/0,7)
+ok 31 - formula =IFERROR(1/0,7)
+  ---
+  duration_ms: 0.186355
+  type: 'test'
+  ...
+# Subtest: formula =IFNA(NA(),3)
+ok 32 - formula =IFNA(NA(),3)
+  ---
+  duration_ms: 0.127652
+  type: 'test'
+  ...
+# Subtest: formula =IFS(FALSE,1,2>1,9)
+ok 33 - formula =IFS(FALSE,1,2>1,9)
+  ---
+  duration_ms: 0.120926
+  type: 'test'
+  ...
+# Subtest: formula =ISERROR(1/0)
+ok 34 - formula =ISERROR(1/0)
+  ---
+  duration_ms: 0.098333
+  type: 'test'
+  ...
+# Subtest: formula =ISNA(NA())
+ok 35 - formula =ISNA(NA())
+  ---
+  duration_ms: 0.147394
+  type: 'test'
+  ...
+# Subtest: formula =CHOOSE(2,1/0,42)
+ok 36 - formula =CHOOSE(2,1/0,42)
+  ---
+  duration_ms: 0.082114
+  type: 'test'
+  ...
+# Subtest: formula =AND(TRUE,TRUE)
+ok 37 - formula =AND(TRUE,TRUE)
+  ---
+  duration_ms: 0.142569
+  type: 'test'
+  ...
+# Subtest: formula =OR(FALSE,TRUE)
+ok 38 - formula =OR(FALSE,TRUE)
+  ---
+  duration_ms: 0.090013
+  type: 'test'
+  ...
+# Subtest: formula =NOT(FALSE)
+ok 39 - formula =NOT(FALSE)
+  ---
+  duration_ms: 0.075767
+  type: 'test'
+  ...
+# Subtest: formula =XOR(TRUE,TRUE)
+ok 40 - formula =XOR(TRUE,TRUE)
+  ---
+  duration_ms: 0.074408
+  type: 'test'
+  ...
+# Subtest: formula =ISNUMBER(42)
+ok 41 - formula =ISNUMBER(42)
+  ---
+  duration_ms: 0.062705
+  type: 'test'
+  ...
+# Subtest: formula =ISTEXT("42")
+ok 42 - formula =ISTEXT("42")
+  ---
+  duration_ms: 0.08502
+  type: 'test'
+  ...
+# Subtest: formula =ISBLANK(A99)
+ok 43 - formula =ISBLANK(A99)
+  ---
+  duration_ms: 0.183071
+  type: 'test'
+  ...
+# Subtest: formula =N(TRUE)
+ok 44 - formula =N(TRUE)
+  ---
+  duration_ms: 0.100505
+  type: 'test'
+  ...
+# Subtest: formula =LEN("Gridline")
+ok 45 - formula =LEN("Gridline")
+  ---
+  duration_ms: 0.200312
+  type: 'test'
+  ...
+# Subtest: formula =LEFT("Gridline",4)
+ok 46 - formula =LEFT("Gridline",4)
+  ---
+  duration_ms: 0.112249
+  type: 'test'
+  ...
+# Subtest: formula =RIGHT("Gridline",4)
+ok 47 - formula =RIGHT("Gridline",4)
+  ---
+  duration_ms: 0.082108
+  type: 'test'
+  ...
+# Subtest: formula =MID("Gridline",3,4)
+ok 48 - formula =MID("Gridline",3,4)
+  ---
+  duration_ms: 0.080989
+  type: 'test'
+  ...
+# Subtest: formula =TRIM("  clean   text ")
+ok 49 - formula =TRIM("  clean   text ")
+  ---
+  duration_ms: 0.14126
+  type: 'test'
+  ...
+# Subtest: formula =UPPER("word")
+ok 50 - formula =UPPER("word")
+  ---
+  duration_ms: 0.079761
+  type: 'test'
+  ...
+# Subtest: formula =LOWER("WORD")
+ok 51 - formula =LOWER("WORD")
+  ---
+  duration_ms: 0.067181
+  type: 'test'
+  ...
+# Subtest: formula =PROPER("hello WORLD")
+ok 52 - formula =PROPER("hello WORLD")
+  ---
+  duration_ms: 0.141527
+  type: 'test'
+  ...
+# Subtest: formula =CONCAT("a","b","c")
+ok 53 - formula =CONCAT("a","b","c")
+  ---
+  duration_ms: 0.085456
+  type: 'test'
+  ...
+# Subtest: formula =TEXTJOIN("-",TRUE,"a","","b")
+ok 54 - formula =TEXTJOIN("-",TRUE,"a","","b")
+  ---
+  duration_ms: 0.101454
+  type: 'test'
+  ...
+# Subtest: formula =SUBSTITUTE("a-a-a","a","x",2)
+ok 55 - formula =SUBSTITUTE("a-a-a","a","x",2)
+  ---
+  duration_ms: 0.115364
+  type: 'test'
+  ...
+# Subtest: formula =FIND("line","Gridline")
+ok 56 - formula =FIND("line","Gridline")
+  ---
+  duration_ms: 0.095961
+  type: 'test'
+  ...
+# Subtest: formula =SEARCH("LINE","Gridline")
+ok 57 - formula =SEARCH("LINE","Gridline")
+  ---
+  duration_ms: 0.056608
+  type: 'test'
+  ...
+# Subtest: formula =REPT("ab",3)
+ok 58 - formula =REPT("ab",3)
+  ---
+  duration_ms: 0.078364
+  type: 'test'
+  ...
+# Subtest: formula =VALUE("$1,200")
+ok 59 - formula =VALUE("$1,200")
+  ---
+  duration_ms: 0.122669
+  type: 'test'
+  ...
+# Subtest: formula =DATE(2026,1,1)
+ok 60 - formula =DATE(2026,1,1)
+  ---
+  duration_ms: 0.111021
+  type: 'test'
+  ...
+# Subtest: formula =YEAR(DATE(2026,9,6))
+ok 61 - formula =YEAR(DATE(2026,9,6))
+  ---
+  duration_ms: 0.153134
+  type: 'test'
+  ...
+# Subtest: formula =MONTH(DATE(2026,9,6))
+ok 62 - formula =MONTH(DATE(2026,9,6))
+  ---
+  duration_ms: 0.069658
+  type: 'test'
+  ...
+# Subtest: formula =DAY(DATE(2026,9,6))
+ok 63 - formula =DAY(DATE(2026,9,6))
+  ---
+  duration_ms: 0.057954
+  type: 'test'
+  ...
+# Subtest: formula =ROW(C7)
+ok 64 - formula =ROW(C7)
+  ---
+  duration_ms: 0.070718
+  type: 'test'
+  ...
+# Subtest: formula =COLUMN(C7)
+ok 65 - formula =COLUMN(C7)
+  ---
+  duration_ms: 0.055671
+  type: 'test'
+  ...
+# Subtest: formula =ROWS(A1:B3)
+ok 66 - formula =ROWS(A1:B3)
+  ---
+  duration_ms: 0.189068
+  type: 'test'
+  ...
+# Subtest: formula =COLUMNS(A1:B3)
+ok 67 - formula =COLUMNS(A1:B3)
+  ---
+  duration_ms: 0.147649
+  type: 'test'
+  ...
+# Subtest: formula =1/0
+ok 68 - formula =1/0
+  ---
+  duration_ms: 0.146592
+  type: 'test'
+  ...
+# Subtest: formula =UNKNOWN(3)
+ok 69 - formula =UNKNOWN(3)
+  ---
+  duration_ms: 0.182452
+  type: 'test'
+  ...
+# Subtest: formula =SQRT(-1)
+ok 70 - formula =SQRT(-1)
+  ---
+  duration_ms: 0.146929
+  type: 'test'
+  ...
+# Subtest: formula =SUM(1,)
+ok 71 - formula =SUM(1,)
+  ---
+  duration_ms: 0.129299
+  type: 'test'
+  ...
+# Subtest: formula =LEFT("a",-1)
+ok 72 - formula =LEFT("a",-1)
+  ---
+  duration_ms: 0.119069
+  type: 'test'
+  ...
+# Subtest: formula =1+
+ok 73 - formula =1+
+  ---
+  duration_ms: 0.144465
+  type: 'test'
+  ...
+# Subtest: formula =IFNA(1/0,7)
+ok 74 - formula =IFNA(1/0,7)
+  ---
+  duration_ms: 0.107326
+  type: 'test'
+  ...
+# Subtest: A1 addressing round-trips sheet boundaries
+ok 75 - A1 addressing round-trips sheet boundaries
+  ---
+  duration_ms: 0.850668
+  type: 'test'
+  ...
+# Subtest: formula fill respects absolute and mixed refs and quoted strings
+ok 76 - formula fill respects absolute and mixed refs and quoted strings
+  ---
+  duration_ms: 0.626566
+  type: 'test'
+  ...
+# Subtest: formula fill does not rewrite sheet-like cell names or function names
+ok 77 - formula fill does not rewrite sheet-like cell names or function names
+  ---
+  duration_ms: 0.115784
+  type: 'test'
+  ...
+# Subtest: formula fill preserves fully absolute refs
+ok 78 - formula fill preserves fully absolute refs
+  ---
+  duration_ms: 0.099318
+  type: 'test'
+  ...
+# Subtest: negative copied reference becomes a reference error
+ok 79 - negative copied reference becomes a reference error
+  ---
+  duration_ms: 0.11442
+  type: 'test'
+  ...
+# Subtest: numeric ranges ignore text and blanks
+ok 80 - numeric ranges ignore text and blanks
+  ---
+  duration_ms: 0.470504
+  type: 'test'
+  ...
+# Subtest: SUMIF criteria
+ok 81 - SUMIF criteria
+  ---
+  duration_ms: 0.4832
+  type: 'test'
+  ...
+# Subtest: COUNTIF wildcards
+ok 82 - COUNTIF wildcards
+  ---
+  duration_ms: 0.39275
+  type: 'test'
+  ...
+# Subtest: SUMIFS multiple criteria
+ok 83 - SUMIFS multiple criteria
+  ---
+  duration_ms: 0.544401
+  type: 'test'
+  ...
+# Subtest: AVERAGEIF
+ok 84 - AVERAGEIF
+  ---
+  duration_ms: 0.22062
+  type: 'test'
+  ...
+# Subtest: SUMPRODUCT
+ok 85 - SUMPRODUCT
+  ---
+  duration_ms: 0.331918
+  type: 'test'
+  ...
+# Subtest: INDEX MATCH
+ok 86 - INDEX MATCH
+  ---
+  duration_ms: 0.456306
+  type: 'test'
+  ...
+# Subtest: exact VLOOKUP
+ok 87 - exact VLOOKUP
+  ---
+  duration_ms: 0.431336
+  type: 'test'
+  ...
+# Subtest: XLOOKUP default, approximate and not-found values
+ok 88 - XLOOKUP default, approximate and not-found values
+  ---
+  duration_ms: 1.715865
+  type: 'test'
+  ...
+# Subtest: dependency invalidation is transitive and preserves unrelated cache entries
+ok 89 - dependency invalidation is transitive and preserves unrelated cache entries
+  ---
+  duration_ms: 0.352109
+  type: 'test'
+  ...
+# Subtest: dependencies are rewired after formula replacement
+ok 90 - dependencies are rewired after formula replacement
+  ---
+  duration_ms: 0.263577
+  type: 'test'
+  ...
+# Subtest: cycles report \#CYCLE! and recover after editing
+ok 91 - cycles report \#CYCLE! and recover after editing
+  ---
+  duration_ms: 0.155081
+  type: 'test'
+  ...
+# Subtest: cross-sheet dependencies and renamed sheet references
+ok 92 - cross-sheet dependencies and renamed sheet references
+  ---
+  duration_ms: 1.267475
+  type: 'test'
+  ...
+# Subtest: atomic transaction rollback
+ok 93 - atomic transaction rollback
+  ---
+  duration_ms: 0.330779
+  type: 'test'
+  ...
+# Subtest: batch undo redo is one history command
+ok 94 - batch undo redo is one history command
+  ---
+  duration_ms: 0.227623
+  type: 'test'
+  ...
+# Subtest: editing after undo invalidates redo branch
+ok 95 - editing after undo invalidates redo branch
+  ---
+  duration_ms: 0.122307
+  type: 'test'
+  ...
+# Subtest: styles undo without changing formulas
+ok 96 - styles undo without changing formulas
+  ---
+  duration_ms: 0.235461
+  type: 'test'
+  ...
+# Subtest: row insertion shifts cells and absolute references
+ok 97 - row insertion shifts cells and absolute references
+  ---
+  duration_ms: 0.539592
+  type: 'test'
+  ...
+# Subtest: deleted direct reference becomes \#REF!
+ok 98 - deleted direct reference becomes \#REF!
+  ---
+  duration_ms: 0.245898
+  type: 'test'
+  ...
+# Subtest: deleting range endpoint shrinks the range
+ok 99 - deleting range endpoint shrinks the range
+  ---
+  duration_ms: 0.224395
+  type: 'test'
+  ...
+# Subtest: column insertion adjusts cross-sheet references
+ok 100 - column insertion adjusts cross-sheet references
+  ---
+  duration_ms: 0.287427
+  type: 'test'
+  ...
+# Subtest: two-value seed fill creates a numeric series
+ok 101 - two-value seed fill creates a numeric series
+  ---
+  duration_ms: 0.485291
+  type: 'test'
+  ...
+# Subtest: formula fill translates relative references
+ok 102 - formula fill translates relative references
+  ---
+  duration_ms: 0.17646
+  type: 'test'
+  ...
+# Subtest: stable table sort preserves headers and adjusts row formulas
+ok 103 - stable table sort preserves headers and adjusts row formulas
+  ---
+  duration_ms: 0.551738
+  type: 'test'
+  ...
+# Subtest: Gridline JSON round-trip preserves values and map-backed metadata
+ok 104 - Gridline JSON round-trip preserves values and map-backed metadata
+  ---
+  duration_ms: 5.519608
+  type: 'test'
+  ...
+# Subtest: malformed workbook and invalid cell addresses are rejected
+ok 105 - malformed workbook and invalid cell addresses are rejected
+  ---
+  duration_ms: 0.172051
+  type: 'test'
+  ...
+# Subtest: sample has no calculation errors in all stored cells
+ok 106 - sample has no calculation errors in all stored cells
+  ---
+  duration_ms: 10.688658
+  type: 'test'
+  ...
+# Subtest: sample cross-sheet assumptions recalculate all dependents
+ok 107 - sample cross-sheet assumptions recalculate all dependents
+  ---
+  duration_ms: 1.052076
+  type: 'test'
+  ...
+# Subtest: CSV parser handles escaped quotes, multiline values, delimiters and BOM
+ok 108 - CSV parser handles escaped quotes, multiline values, delimiters and BOM
+  ---
+  duration_ms: 0.592615
+  type: 'test'
+  ...
+# Subtest: TSV serialization round-trips quoted content
+ok 109 - TSV serialization round-trips quoted content
+  ---
+  duration_ms: 0.37569
+  type: 'test'
+  ...
+# Subtest: CSV input neutralizes formula injection
+ok 110 - CSV input neutralizes formula injection
+  ---
+  duration_ms: 0.554251
+  type: 'test'
+  ...
+# Subtest: ZIP writer/reader round-trip and CRC integrity
+ok 111 - ZIP writer/reader round-trip and CRC integrity
+  ---
+  duration_ms: 1.214047
+  type: 'test'
+  ...
+# Subtest: XLSX output has all sheets, formulas, and styles
+ok 112 - XLSX output has all sheets, formulas, and styles
+  ---
+  duration_ms: 35.845275
+  type: 'test'
+  ...
+# Subtest: axis prefix positions, binary search, and hidden rows
+ok 113 - axis prefix positions, binary search, and hidden rows
+  ---
+  duration_ms: 0.310808
+  type: 'test'
+  ...
+# Subtest: range operations have explicit bounds
+ok 114 - range operations have explicit bounds
+  ---
+  duration_ms: 268.588636
+  type: 'test'
+  ...
+# Subtest: date conversion round-trips contemporary dates
+ok 115 - date conversion round-trips contemporary dates
+  ---
+  duration_ms: 0.172483
+  type: 'test'
+  ...
+# Subtest: number formatting preserves documented formats
+ok 116 - number formatting preserves documented formats
+  ---
+  duration_ms: 1.305684
+  type: 'test'
+  ...
+# Subtest: whole-column dependencies observe new rows beyond previous used range
+ok 117 - whole-column dependencies observe new rows beyond previous used range
+  ---
+  duration_ms: 1.587145
+  type: 'test'
+  ...
+# Subtest: ISNUMBER/ISTEXT return false on error values
+ok 118 - ISNUMBER/ISTEXT return false on error values
+  ---
+  duration_ms: 0.327061
+  type: 'test'
+  ...
+# Subtest: a formula referencing an empty cell yields numeric zero
+ok 119 - a formula referencing an empty cell yields numeric zero
+  ---
+  duration_ms: 0.175464
+  type: 'test'
+  ...
+# Subtest: non-finite literal numbers produce an explicit error
+ok 120 - non-finite literal numbers produce an explicit error
+  ---
+  duration_ms: 0.210757
+  type: 'test'
+  ...
+# Subtest: renaming a worksheet retargets defined names
+ok 121 - renaming a worksheet retargets defined names
+  ---
+  duration_ms: 7.316015
+  type: 'test'
+  ...
+# Subtest: JSON metadata cannot replace sheet methods
+ok 122 - JSON metadata cannot replace sheet methods
+  ---
+  duration_ms: 0.161094
+  type: 'test'
+  ...
+# Subtest: function registry exposes the documented 83 names
+ok 123 - function registry exposes the documented 83 names
+  ---
+  duration_ms: 0.056953
+  type: 'test'
+  ...
+1..123
+# tests 123
+# suites 0
+# pass 123
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 642.723914

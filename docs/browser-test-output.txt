@@ -1,0 +1,49 @@
+PASS Standalone app boots without an uncaught exception
+PASS Demo total is calculated
+PASS Demo has three sheets and two chart overlays
+PASS Typing commits a real numeric cell
+PASS Editing recalculates dependent total
+PASS Keyboard undo restores both input and calculated total
+PASS Keyboard redo reapplies the transaction
+PASS Formula bar parses, commits, and calculates
+PASS New worksheet command creates a sheet
+PASS Clipboard paste event enters a rectangular range
+PASS Pasted formulas calculate
+PASS Fill-down shifts relative references
+PASS Internal clipboard fallback preserves rectangular values
+PASS Internal formula copy translates references
+PASS Ribbon formatting applies to the selection
+PASS Worksheet rename dialog updates model and tab
+PASS Freeze panes uses active row and column
+PASS Cell notes persist into the model and panel
+PASS Sorting preserves header and reorders data rows
+PASS Value filters hide nonmatching rows
+PASS Clear filters restores visibility
+PASS Find and replace edits matching cells
+PASS XLSX export/import round-trip preserves calculated values
+PASS XLSX round-trip preserves basic workbook structures
+PASS Native DEFLATE decompression imports a compressed XLSX
+PASS Unsupported 1904 date-system files are rejected explicitly
+PASS Autosave writes a restorable workbook snapshot to Storage interface
+PASS Stress sheet creates 80,008 sparse cells
+PASS Virtualized scrolling reaches row 10,001 with correct formulas
+PASS Stress view renders only its viewport
+PASS Theme toggle updates renderer state
+PASS Zoom command updates the viewport transform
+PASS Browser interactions produce no uncaught JavaScript errors
+{
+  "passed": 33,
+  "backend": {
+    "backend": "canvas2d",
+    "reason": "WebGPU is not exposed by this browser."
+  },
+  "stress": {
+    "visibleCells": 576,
+    "lastFrameCPUms": 4.400000000008731,
+    "storedCells": 80008,
+    "active": {
+      "r": 10000,
+      "c": 3
+    }
+  }
+}
