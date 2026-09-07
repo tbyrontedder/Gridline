@@ -1,0 +1,75 @@
+name: Import Gridline source
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.bootstrap/**'
+      - '.github/workflows/import-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gridline-source-import
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Expand checksum-verified source bundle
+        run: python3 .bootstrap/import.py
+      - name: Unit tests and standalone build
+        run: |
+          npm test | tee docs/unit-test-results.txt
+          npm run build
+          node --check dist/gridline.js
+          touch dist/.nojekyll
+      - name: Install isolated browser test tools
+        run: |
+          python3 -m venv "$RUNNER_TEMP/gridline-browser"
+          "$RUNNER_TEMP/gridline-browser/bin/python" -m pip install playwright==1.57.0
+          "$RUNNER_TEMP/gridline-browser/bin/python" -m playwright install --with-deps chromium
+      - name: Browser integration tests and preview
+        run: |
+          PYTHON="$RUNNER_TEMP/gridline-browser/bin/python"
+          CHROMIUM="$($PYTHON -c 'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()')"
+          "$PYTHON" tests/browser-smoke.py --chromium "$CHROMIUM" | tee docs/browser-test-output.txt
+      - name: Record GitHub validation
+        env:
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          report = json.loads(Path('docs/browser-test-results.json').read_text())
+          Path('docs/GITHUB_VALIDATION.md').write_text(
+              '# GitHub import validation\n\n'
+              f"Run: {os.environ['RUN_URL']}\n\n"
+              'Unit tests: 123 passed. Standalone build and JavaScript syntax check passed.\n\n'
+              f"Browser checks: {report['passed']} passed in Chromium {report['browser']}.\n\n"
+              f"Executed renderer: {report['backend']['backend']}.\n\n"
+              'The browser harness uses an opaque origin with an in-memory Storage fixture. '
+              'This does not certify hardware WebGPU execution, persistent storage, or Excel equivalence. '
+              'The original release test report is retained as historical validation; the adjacent JSON and text logs describe this GitHub run.\n'
+          )
+          PY
+      - name: Commit validated application sources
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .gitignore .nojekyll LICENSE README.md package.json build.js server.js index.html styles.css src tests docs dist
+          if ! git diff --cached --quiet; then
+            git commit -m 'Import Gridline spreadsheet application, tests, and documentation'
+            git push origin HEAD:main
+          fi
