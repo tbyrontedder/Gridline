@@ -11,3 +11,5 @@ body.dark{--surface:#1b2820;--ribbon:#223027;--background:#1b2820;--ink:#dce8df;
 .format-categories option { padding:7px 9px; }
 .format-sample { display:block; min-height:48px; padding:14px; margin-bottom:20px; background:var(--surface); border:1px solid var(--line); border-radius:6px; overflow-wrap:anywhere; }
 @media (max-width:520px) { .format-layout { grid-template-columns:115px minmax(0,1fr); gap:12px; } }
+
+#format-pattern { height:auto; min-height:150px; }

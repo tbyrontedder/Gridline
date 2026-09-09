@@ -178,3 +178,22 @@ test('hidden columns preserve widths, persist, and track structural edits',()=>{
   w.structuralEdit(s,'column',0,1);assert.deepEqual([...s.hiddenCols],[2]);
   w.undo();assert.deepEqual([...w.activeSheet.hiddenCols],[1]);w.undo();assert.equal(w.activeSheet.hiddenCols.size,0);
 });
+
+ test('Excel custom dates, locales, literals and combined times retain their display', async () => {
+  const { numberFormatStyle, numberFormatCode } = await import('../src/engine.js');
+  for (const [pattern, expected] of [
+    ['mm-dd-yy','01-01-24'], ['[$-409]m/d/yyyy','1/1/2024'],
+    ['dd/mm/yyyy','01/01/2024'], ['m/d/yy h:mm','1/1/24 13:30'],
+    ['DD-MMM-YYYY','01-Jan-2024'], ['d-mmm','1-Jan'], ['mmm-yy','Jan-24'],
+    ['h:mm:ss AM/PM','1:30:00 PM'], ['mm:ss','30:00'],
+    ['yyyy" year "mm" month "dd','2024 year 01 month 01'],
+  ]) {
+    const style = numberFormatStyle(pattern);
+    assert.ok(['date','time'].includes(style.format), pattern);
+    assert.equal(formatValue(45292.5625,style), expected, pattern);
+    assert.equal(numberFormatCode(style), pattern);
+  }
+  assert.equal(formatValue(1.5,{format:'[h]:mm:ss'}),'36:00:00');
+  assert.equal(numberFormatStyle('0.00').format,'number');
+  assert.equal(numberFormatStyle('0" days"').format,'0" days"');
+ });

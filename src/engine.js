@@ -409,13 +409,16 @@ export function rawValue(raw) {
 }
 const formatters = new Map();
 function numFormat(locale, options, value) { const key = JSON.stringify([locale, options]); if (!formatters.has(key)) formatters.set(key, new Intl.NumberFormat(locale, options)); return formatters.get(key).format(value); }
-export const DATE_FORMATS = ['m/d/yyyy', 'mm/dd/yy', 'yyyy-mm-dd', 'mmm d, yyyy', 'dddd, mmmm d, yyyy', 'd-mmm-yy'];
+export const DATE_FORMATS = ['m/d/yyyy', 'mm/dd/yy', 'yyyy-mm-dd', 'mmm d, yyyy', 'dddd, mmmm d, yyyy', 'd-mmm-yy', 'mm/dd/yyyy', 'dd/mm/yyyy', 'm/d/yy', 'm/d/yyyy h:mm'];
 export const TIME_FORMATS = ['h:mm AM/PM', 'h:mm:ss AM/PM', 'hh:mm', 'hh:mm:ss', '[h]:mm:ss'];
 export const CURRENCIES = { USD: '$', EUR: '€', GBP: '£', JPY: '¥', CAD: 'CA$', AUD: 'A$' };
 export function numberFormatStyle(code = 'general') {
   const defaults = { decimals:null, pattern:null, currency:'USD', grouping:true };
   if (code === 'date' || DATE_FORMATS.includes(code)) return { ...defaults, format: 'date', pattern: code === 'date' ? 'mmm d, yyyy' : code };
   if (code === 'time' || TIME_FORMATS.includes(code)) return { ...defaults, format: 'time', pattern: code === 'time' ? 'hh:mm:ss' : code };
+  // Ignore quoted literals and locale/color directives when identifying Excel date tokens.
+  const dateTokens = code.replace(/"[^"\n]*"|\\.|\[(?![hms]+\])[^\]]*\]|_.|\*./gi, '').split(';')[0];
+  if (/[ydhs]|m/i.test(dateTokens) && /^[ymdhs\s/:.,\-\[\]APMapm0]+$/i.test(dateTokens)) return { ...defaults, format: /[yd]/i.test(dateTokens) ? 'date' : 'time', pattern: code };
   if (code === '@') return { ...defaults, format: 'text' };
   if (/^(general|number|integer|currency|percent|text)$/i.test(code)) return { ...defaults, format: code.toLowerCase() };
   const match = /^(?:"([^"]+)"|([$€£¥]))?(#,##0|0)(?:\.(0{1,10}))?(%)?$/.exec(code);
@@ -446,10 +449,25 @@ export function formatValue(value, style = {}) {
     if (!Number.isFinite(date.getTime())) return '########';
     const totalSeconds = Math.round(value * 86400), seconds = (totalSeconds % 86400 + 86400) % 86400, h = Math.floor(seconds / 3600), m = Math.floor(seconds / 60) % 60, sec = seconds % 60;
     const pad = n => String(n).padStart(2, '0');
-    if (fmt === 'time') return pattern.replace(/\[h\]|AM\/PM|hh|h|mm|ss/g, token => ({ '[h]': Math.floor(totalSeconds / 3600), 'AM/PM': h < 12 ? 'AM' : 'PM', hh: pad(h), h: pattern.includes('AM/PM') ? h % 12 || 12 : h, mm: pad(m), ss: pad(sec) })[token]);
     const y = date.getUTCFullYear(), month = date.getUTCMonth(), day = Math.floor(value) === 60 ? 29 : date.getUTCDate();
     const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-    return pattern.replace(/yyyy|yy|mmmm|mmm|mm|m|dddd|ddd|dd|d/g, token => ({ yyyy: String(y).padStart(4, '0'), yy: pad(y % 100), mmmm: months[month], mmm: months[month].slice(0,3), mm: pad(month + 1), m: month + 1, dddd: ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][date.getUTCDay()], ddd: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][date.getUTCDay()], dd: pad(day), d: day })[token]);
+    const tokens = pattern.match(/"[^"\n]*"|\\.|\[[^\]]*\]|_.|\*.|AM\/PM|A\/P|y{2,4}|m{1,5}|d{1,4}|h{1,2}|s{1,2}|\.0+|./gi) || [];
+    const ampm = tokens.some(t => /^(AM\/PM|A\/P)$/i.test(t));
+    return tokens.map((token, i) => {
+      const t = token.toLowerCase();
+      if (token.startsWith('"')) return token.slice(1,-1);
+      if (token.startsWith('\\')) return token.slice(1);
+      if (/^[_*]/.test(token)) return '';
+      if (/^\[[hms]+\]$/.test(t)) return String(Math.floor(totalSeconds / (t[1] === 'h' ? 3600 : t[1] === 'm' ? 60 : 1))).padStart(t.length - 2, '0');
+      if (token.startsWith('[')) return '';
+      if (/^\.0+$/.test(t)) return (value * 86400 % 1).toFixed(t.length - 1).slice(1);
+      if (t === 'am/pm' || t === 'a/p') return (h < 12 ? 'AM' : 'PM').slice(0, t === 'a/p' ? 1 : 2);
+      if (/^h{1,2}$/.test(t)) return t.length === 2 ? pad(ampm ? h % 12 || 12 : h) : String(ampm ? h % 12 || 12 : h);
+      if (/^s{1,2}$/.test(t)) return t.length === 2 ? pad(sec) : String(sec);
+      const before = tokens.slice(0,i).reverse().find(x => /^[ymdhs]+$/i.test(x)), after = tokens.slice(i+1).find(x => /^[ymdhs]+$/i.test(x));
+      if (/^m{1,2}$/.test(t) && (/^h/i.test(before || '') || /^s/i.test(after || ''))) return t.length === 2 ? pad(m) : String(m);
+      return ({ yyyy: String(y).padStart(4, '0'), yy: pad(y % 100), mmmmm: months[month][0], mmmm: months[month], mmm: months[month].slice(0,3), mm: pad(month + 1), m: month + 1, dddd: ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][date.getUTCDay()], ddd: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][date.getUTCDay()], dd: pad(day), d: day })[t] ?? token;
+    }).join('').split(';')[0];
   }
   const dp = Math.max(0, Math.min(10, s.decimals ?? (fmt === 'percent' ? 1 : fmt === 'number' ? 2 : 0)));
   if (['number','integer','currency','percent'].includes(fmt) || s.decimals != null) {

@@ -144,7 +144,7 @@ function readXML(bytes) {
 }
 const elements = (node, name) => [...node.getElementsByTagNameNS('*', name)];
 const firstElement = (node, name) => elements(node, name)[0];
-const builtinFormats = { 0: 'general', 1: 'integer', 2: 'number', 3: 'integer', 4: 'number', 9: '0%', 10: '0.00%', 14: 'm/d/yyyy', 15: 'd-mmm-yy', 16: 'date', 17: 'date', 18: 'h:mm AM/PM', 19: 'h:mm:ss AM/PM', 20: 'hh:mm', 21: 'hh:mm:ss', 22: 'date', 46: '[h]:mm:ss', 49: '@', 44: 'currency' };
+const builtinFormats = { 0: 'general', 1: 'integer', 2: 'number', 3: 'integer', 4: 'number', 9: '0%', 10: '0.00%', 14: 'm/d/yyyy', 15: 'd-mmm-yy', 16: 'd-mmm', 17: 'mmm-yy', 18: 'h:mm AM/PM', 19: 'h:mm:ss AM/PM', 20: 'hh:mm', 21: 'hh:mm:ss', 22: 'm/d/yy h:mm', 45: 'mm:ss', 46: '[h]:mm:ss', 47: 'mm:ss.0', 49: '@', 44: 'currency' };
 export async function importXLSX(buffer, title = 'Imported workbook') {
   const parts = await unzip(buffer), workbookDoc = readXML(parts.get('xl/workbook.xml')), relsDoc = readXML(parts.get('xl/_rels/workbook.xml.rels'));
   const dateSystem = firstElement(workbookDoc, 'workbookPr')?.getAttribute('date1904');

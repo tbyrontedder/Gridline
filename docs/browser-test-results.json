@@ -5,7 +5,7 @@
     "backend": "canvas2d",
     "reason": "WebGPU is not exposed by this browser."
   },
-  "passed": 54,
+  "passed": 58,
   "checks": [
     {
       "name": "Standalone app boots without an uncaught exception",
@@ -149,6 +149,16 @@
       "detail": null
     },
     {
+      "name": "Excel custom date and time formats apply automatically on import",
+      "passed": true,
+      "detail": [
+        "01-01-24",
+        "1/1/2024",
+        "1/1/24 13:30",
+        "13:30:00"
+      ]
+    },
+    {
       "name": "Native DEFLATE decompression imports a compressed XLSX",
       "passed": true,
       "detail": null
@@ -167,7 +177,7 @@
       "name": "Stress sheet creates 80,008 sparse cells",
       "passed": true,
       "detail": {
-        "wall_ms": 131.04
+        "wall_ms": 105.32
       }
     },
     {
@@ -183,7 +193,7 @@
       "passed": true,
       "detail": {
         "visibleCells": 576,
-        "lastFrameCPUms": 1.7999999523162842,
+        "lastFrameCPUms": 1.600000023841858,
         "storedCells": 80008,
         "active": {
           "r": 10000,
@@ -202,6 +212,11 @@
       "detail": null
     },
     {
+      "name": "Date format choices are visible as a list",
+      "passed": true,
+      "detail": null
+    },
+    {
       "name": "Right-click column formatting creates one sparse default",
       "passed": true,
       "detail": null
@@ -209,7 +224,17 @@
     {
       "name": "Date entry uses a serial internally and a readable formula bar",
       "passed": true,
-      "detail": null
+      "detail": {
+        "value": 46273,
+        "style": {
+          "decimals": null,
+          "pattern": "yyyy-mm-dd",
+          "currency": "USD",
+          "grouping": true,
+          "format": "date"
+        },
+        "input": "2026-09-08"
+      }
     },
     {
       "name": "Date editor shows a readable date",
@@ -412,11 +437,21 @@
       "name": "Browser interactions produce no uncaught JavaScript errors",
       "passed": true,
       "detail": []
+    },
+    {
+      "name": "Text to Columns previews displayed date separators",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Time format choices are visible as a list",
+      "passed": true,
+      "detail": null
     }
   ],
   "stressMetrics": {
     "visibleCells": 576,
-    "lastFrameCPUms": 1.7999999523162842,
+    "lastFrameCPUms": 1.600000023841858,
     "storedCells": 80008,
     "active": {
       "r": 10000,

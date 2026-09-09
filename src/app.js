@@ -145,7 +145,7 @@ class GridlineApp {
     $('#sheet-tabs').addEventListener('contextmenu', e => { const t = e.target.closest('[data-sheet]'); if (t) { e.preventDefault(); this.switchSheet(t.dataset.sheet); this.contextMenu(e.clientX, e.clientY, [['rename-sheet','Rename…'],['duplicate-sheet','Duplicate'],['add-sheet','Insert worksheet'],null,['delete-sheet','Delete worksheet']]); } });
     for (const axis of ['v', 'h']) $(`#${axis}-scrollbar`).addEventListener('pointerdown', e => this.scrollbarDown(e, axis));
     this.dialog.addEventListener('click', e => { if (e.target === this.dialog) { const b = this.dialog.getBoundingClientRect(); if (e.clientX < b.left || e.clientX > b.right || e.clientY < b.top || e.clientY > b.bottom) this.closeDialog(); } });
-    this.dialog.addEventListener('close', () => this.host.focus());
+    this.dialog.addEventListener('close', () => { if (!this.isInputFocus()) this.host.focus(); });
     window.addEventListener('beforeunload', () => { if (this.autosave) this.persist(); });
     window.addEventListener('error', e => { $('#loading')?.remove(); this.toast(`Application error: ${e.message}`, true); });
   }
@@ -355,8 +355,8 @@ class GridlineApp {
       $('#format-sample').textContent = formatValue(value ?? (['date','time'].includes(style.format) ? 45292.5 : 1234.567), style);
     };
     const options = (useCurrent = false) => {
-      const fmt = category.value, patterns = fmt === 'date' ? DATE_FORMATS : TIME_FORMATS;
-      $('#format-options').innerHTML = ['number','currency','percent'].includes(fmt) ? `<label class="field-label" for="format-decimals">Decimal places</label><input id="format-decimals" class="dialog-input" type="number" min="0" max="10" step="1" required value="2">${fmt === 'currency' ? `<label class="field-label" for="format-currency">Currency symbol</label><select id="format-currency" class="dialog-input">${Object.entries(CURRENCIES).map(([code,symbol]) => `<option value="${code}">${symbol} — ${code}</option>`).join('')}</select>` : ''}${fmt !== 'percent' ? '<p><label><input id="format-grouping" type="checkbox" checked> Use thousands separator</label></p>' : ''}` : ['date','time'].includes(fmt) ? `<label class="field-label" for="format-pattern">Type</label><select id="format-pattern" class="dialog-input" size="${patterns.length}">${patterns.map(pattern => `<option value="${pattern}">${formatValue(45292.5625,{format:fmt,pattern})}</option>`).join('')}</select>` : '';
+      const fmt = category.value, patterns = [...new Set([...(fmt === 'date' ? DATE_FORMATS : TIME_FORMATS), ...(useCurrent && initial.pattern ? [initial.pattern] : [])])];
+      $('#format-options').innerHTML = ['number','currency','percent'].includes(fmt) ? `<label class="field-label" for="format-decimals">Decimal places</label><input id="format-decimals" class="dialog-input" type="number" min="0" max="10" step="1" required value="2">${fmt === 'currency' ? `<label class="field-label" for="format-currency">Currency symbol</label><select id="format-currency" class="dialog-input">${Object.entries(CURRENCIES).map(([code,symbol]) => `<option value="${code}">${symbol} — ${code}</option>`).join('')}</select>` : ''}${fmt !== 'percent' ? '<p><label><input id="format-grouping" type="checkbox" checked> Use thousands separator</label></p>' : ''}` : ['date','time'].includes(fmt) ? `<label class="field-label" for="format-pattern">Type</label><select id="format-pattern" class="dialog-input" size="${patterns.length}">${patterns.map(pattern => `<option value="${escapeHTML(pattern)}">${escapeHTML(formatValue(45292.5625,{format:fmt,pattern}))}</option>`).join('')}</select>` : '';
       if ($('#format-decimals')) $('#format-decimals').value = useCurrent && Number.isInteger(initial.decimals) && initial.decimals >= 0 && initial.decimals <= 10 ? initial.decimals : useCurrent ? (initial.format === 'number' ? 2 : initial.format === 'percent' ? 1 : 0) : 2;
       if (useCurrent) { if ($('#format-currency')) $('#format-currency').value = initial.currency || 'USD'; if ($('#format-grouping')) $('#format-grouping').checked = initial.grouping !== false; }
       if ($('#format-pattern')) $('#format-pattern').value = useCurrent && patterns.includes(initial.pattern) ? initial.pattern : patterns[0];
@@ -598,7 +598,7 @@ class GridlineApp {
       if (delimiter.length !== 1) throw new Error('Enter one delimiter character.');
       const rows = [];
       for (let r=q.r1;r<=limit;r++) {
-        const value = this.workbook.value(sheet,r,q.c1);
+        const style = sheet.style(r,q.c1), value = ['date','time'].includes(numberFormatStyle(style.format).format) ? this.workbook.display(sheet,r,q.c1) : this.workbook.value(sheet,r,q.c1);
         const parsed = parseDelimited(String(value ?? ''),delimiter);
         if (parsed.length !== 1) throw new Error('Line breaks inside a source cell must be enclosed in double quotes.');
         rows.push(parsed[0]);
