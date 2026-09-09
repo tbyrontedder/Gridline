@@ -74,3 +74,89 @@ test('non-finite literal numbers produce an explicit error',()=>{const w=make(),
 test('renaming a worksheet retargets defined names',()=>{const w=createSampleWorkbook(),s=w.sheetByName('Assumptions');w.renameSheet(s,'Model assumptions');assert.equal(w.names.COST_RATIO,"'Model assumptions'!$B$3");const t=w.sheetByName('Sales data');w.setRaw(t,0,20,'=COST_RATIO');assert.equal(w.value(t,0,20),.58);});
 test('JSON metadata cannot replace sheet methods',()=>{const d=make().toJSON();d.sheets[0].get='unsafe';d.sheets[0].toJSON='unsafe';const w=Workbook.fromJSON(d);assert.equal(typeof w.activeSheet.get,'function');assert.equal(typeof w.activeSheet.toJSON,'function');});
 test('function registry exposes the documented 83 names',()=>assert.equal(FUNCTIONS.size,83));
+
+test('column formats stay sparse, preserve values and appearance, and survive JSON and history', () => {
+  const wb = make(); let s = wb.activeSheet;
+  wb.setRaw(s, 1, 1, '=2+3'); wb.applyStyle(s, parseRange('B2'), { bold:true, format:'percent' });
+  wb.applyStyle(s, {r1:0,r2:MAX_ROWS-1,c1:1,c2:1}, {format:'currency',currency:'EUR',decimals:2});
+  assert.equal(s.cells.size, 1); assert.equal(s.colStyles.size, 1); assert.equal(s.style(1,1).bold, true); assert.equal(s.raw(1,1), '=2+3');
+  assert.equal(wb.display(s,1,1), '€5.00'); assert.deepEqual(s.usedRange(), {r1:0,c1:0,r2:1,c2:1});
+  wb.undo(); s = wb.activeSheet; assert.equal(s.colStyles.size,0); assert.equal(wb.display(s,1,1),'500.0%');
+  wb.redo(); s = wb.activeSheet;
+  const restored = Workbook.fromJSON(JSON.parse(JSON.stringify(wb.toJSON()))); s = restored.activeSheet;
+  restored.setRaw(s,MAX_ROWS-1,1,'12.3'); assert.equal(restored.display(s,MAX_ROWS-1,1),'€12.30'); assert.equal(s.cells.size,2);
+});
+test('row defaults, cell overrides, and structural edits keep their coordinates', () => {
+  const wb = make(); let s = wb.activeSheet;
+  wb.applyStyle(s,{r1:0,r2:MAX_ROWS-1,c1:2,c2:2},{format:'currency'});
+  wb.applyStyle(s,{r1:4,r2:4,c1:0,c2:MAX_COLS-1},{format:'percent',decimals:2});
+  assert.equal(s.cells.size,0); wb.setRaw(s,4,2,'0.5'); assert.equal(wb.display(s,4,2),'50.00%');
+  wb.applyStyle(s,parseRange('C5'),{format:'number',decimals:1}); assert.equal(wb.display(s,4,2),'0.5');
+  wb.structuralEdit(s,'column',1,1); assert.equal(s.colStyles.has(3),true); assert.equal(s.colStyles.has(2),false);
+  wb.structuralEdit(s,'row',3,1); assert.equal(s.rowStyles.has(5),true); assert.equal(wb.display(s,5,3),'0.5');
+  wb.structuralEdit(s,'row',5,-1); assert.equal(s.rowStyles.size,0);
+});
+test('date and time presets display correctly and edit as readable inputs without losing formulas', () => {
+  const wb = make(), s = wb.activeSheet;
+  wb.applyStyle(s,{r1:0,r2:MAX_ROWS-1,c1:1,c2:1},{format:'date',pattern:'mm/dd/yy'});
+  wb.setRaw(s,0,1,'2024-02-29'); assert.equal(wb.display(s,0,1),'02/29/24'); assert.equal(wb.editValue(s,0,1),'2024-02-29');
+  wb.setRaw(s,1,1,'9/8/2026 13:45:30'); assert.equal(wb.editValue(s,1,1),'2026-09-08 13:45:30');
+  wb.setRaw(s,2,1,'=B1+1'); assert.equal(wb.editValue(s,2,1),'=B1+1'); assert.equal(wb.display(s,2,1),'03/01/24');
+  assert.throws(()=>wb.setRaw(s,0,1,'2025-02-29'), /valid date/); assert.equal(wb.editValue(s,0,1),'2024-02-29');
+  assert.equal(formatValue(60,{format:'date',pattern:'yyyy-mm-dd'}),'1900-02-29');
+  assert.equal(formatValue(45292.5625,{format:'time',pattern:'h:mm AM/PM'}),'1:30 PM');
+  assert.equal(formatValue(1.5,{format:'time',pattern:'[h]:mm:ss'}),'36:00:00');
+  wb.applyStyle(s,parseRange('C1'),{format:'time',pattern:'hh:mm:ss'}); wb.setRaw(s,0,2,'1:30:00 PM'); assert.equal(wb.display(s,0,2),'13:30:00');
+  assert.equal(wb.value(s,0,2),.5625); assert.throws(()=>wb.setRaw(s,0,2,'25:00'), /valid time/);
+});
+test('format changes reset old options, text preserves leading zeros, and fill copies inherited formatting', () => {
+  const wb = make(), s = wb.activeSheet;
+  wb.applyStyle(s,{r1:0,r2:MAX_ROWS-1,c1:0,c2:0},{format:'currency',currency:'GBP',decimals:4});
+  wb.setRaw(s,0,0,'42'); wb.fill(s,parseRange('A1'),parseRange('A1:B1')); assert.equal(wb.display(s,0,1),'£42.0000');
+  wb.applyStyle(s,parseRange('A1'),{format:'general'}); assert.equal(wb.display(s,0,0),'42');
+  const restored = Workbook.fromJSON(JSON.parse(JSON.stringify(wb.toJSON()))); assert.equal(restored.display(restored.activeSheet,0,0),'42');
+  wb.applyStyle(s,parseRange('C1'),{format:'text'}); wb.setRaw(s,0,2,'00123'); assert.equal(wb.value(s,0,2),'00123');
+});
+test('XLSX includes sparse row and column formats, even with no stored cells', async () => {
+  const wb = make(), s = wb.activeSheet;
+  wb.applyStyle(s,{r1:0,r2:MAX_ROWS-1,c1:1,c2:1},{format:'date',pattern:'yyyy-mm-dd'});
+  wb.applyStyle(s,{r1:3,r2:3,c1:0,c2:MAX_COLS-1},{format:'currency',currency:'GBP',decimals:2});
+  const parts = await unzip(exportXLSX(wb)), decode = name => new TextDecoder().decode(parts.get(name));
+  assert.match(decode('xl/worksheets/sheet1.xml'), /<col min="2" max="2" style="\d+"\/>/);
+  assert.match(decode('xl/worksheets/sheet1.xml'), /<row r="4" s="\d+" customFormat="1">/);
+  assert.match(decode('xl/styles.xml'), /yyyy-mm-dd/); assert.match(decode('xl/styles.xml'), /£/);
+  assert.equal(s.cells.size,0);
+});
+
+test('clearing a column removes its defaults and undo restores them', () => {
+  const wb = make(); let s = wb.activeSheet; const column = {r1:0,r2:MAX_ROWS-1,c1:1,c2:1};
+  wb.applyStyle(s,column,{format:'date',pattern:'yyyy-mm-dd'}); wb.setRaw(s,0,1,'2026-09-08');
+  wb.clear(s,column,true); assert.equal(s.cells.size,0); assert.equal(s.colStyles.size,0);
+  wb.undo(); s = wb.activeSheet; assert.equal(wb.display(s,0,1),'2026-09-08'); assert.equal(s.colStyles.size,1);
+});
+
+
+test('decimal controls on integer formats are retained in XLSX', async () => {
+  const wb = make(), s = wb.activeSheet;
+  wb.setRaw(s,0,0,'12.34'); wb.applyStyle(s,parseRange('A1'),{format:'integer',decimals:2});
+  assert.equal(wb.display(s,0,0),'12.34');
+  const parts = await unzip(exportXLSX(wb));
+  assert.match(new TextDecoder().decode(parts.get('xl/styles.xml')), /formatCode="#,##0.00"/);
+});
+
+test('native import rejects invalid decimal settings in cell, row, and column styles', () => {
+  for (const location of ['cells','rowStyles','colStyles']) for (const decimals of ['0"><img src=x onerror=alert(1)>', '2', -1, 11, 1.5, true, {}, [], NaN, Infinity]) {
+    const data = make().toJSON(), style = {format:'number', decimals};
+    data.sheets[0][location] = location === 'cells' ? [['0,0',{raw:'',style}]] : [[0,style]];
+    assert.throws(() => Workbook.fromJSON(data), /Invalid decimal places/, `${location}: ${JSON.stringify(decimals)}`);
+  }
+});
+test('native import retains supported decimal settings and older styles without precision', () => {
+  for (const decimals of [undefined, null, ...Array.from({length:11}, (_,i) => i)]) {
+    const data = make().toJSON(), style = {format:'number', decimals};
+    data.sheets[0].cells = [['0,0',{raw:'42',style}]];
+    data.sheets[0].rowStyles = [[1,style]]; data.sheets[0].colStyles = [[1,style]];
+    const sheet = Workbook.fromJSON(JSON.parse(JSON.stringify(data))).activeSheet;
+    assert.equal(sheet.get(0,0).style.decimals,decimals); assert.equal(sheet.rowStyles.get(1).decimals,decimals); assert.equal(sheet.colStyles.get(1).decimals,decimals);
+  }
+});

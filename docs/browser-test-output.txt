@@ -30,16 +30,28 @@ PASS Virtualized scrolling reaches row 10,001 with correct formulas
 PASS Stress view renders only its viewport
 PASS Theme toggle updates renderer state
 PASS Zoom command updates the viewport transform
+PASS Right-click column formatting creates one sparse default
+PASS Date entry uses a serial internally and a readable formula bar
+PASS Date editor shows a readable date
+PASS Unchanged date editing preserves the numeric value
+PASS Invalid dates keep the editor open and the original value
+PASS Keyboard format dialog changes only presentation
+PASS Cancel discards format changes
+PASS Right-click row formatting creates a sparse row default
+PASS Native save and XLSX preserve date/time/currency/row formats
+PASS Loaded column defaults apply to future entries without expanding the sheet
+PASS Malicious decimal settings are rejected from cell, row, and column file styles
+PASS Format dialog treats hostile precision as data even if import validation is bypassed
 PASS Browser interactions produce no uncaught JavaScript errors
 {
-  "passed": 33,
+  "passed": 45,
   "backend": {
     "backend": "canvas2d",
     "reason": "WebGPU is not exposed by this browser."
   },
   "stress": {
     "visibleCells": 576,
-    "lastFrameCPUms": 4.400000000008731,
+    "lastFrameCPUms": 1.7000000476837158,
     "storedCells": 80008,
     "active": {
       "r": 10000,

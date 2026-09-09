@@ -4,3 +4,10 @@ body.dark{--surface:#1b2820;--ribbon:#223027;--background:#1b2820;--ink:#dce8df;
 @media(max-width:1250px){.global-search{width:245px}.document-title{min-width:185px}.titlebar{gap:8px}.ribbon-group{padding:0 9px}.document-actions .editing-label{display:none}.ribbon-tabs{gap:0}.ribbon-tabs button{padding:0 10px}.sheet-bar-hint{display:none}.ribbon-group.styles-group .style-gallery{display:none}.font-select{width:106px}}
 @media(max-width:1000px){.global-search{width:35px;min-width:35px;justify-content:center}.global-search>span:not(:first-child),.global-search kbd{display:none}.autosave{font-size:0}.titlebar .document-title{flex:1}.document-actions>button:first-child{display:none}.ribbon-tabs button{font-size:11px;padding:0 8px}.ribbon-group{padding:0 7px}.side-panel{width:275px}.selection-stats{gap:8px}.statusbar{gap:7px;padding:0 10px}}
 @media print{html,body{overflow:visible;height:auto;background:white}.app,.toast,dialog,.context-menu{display:none!important}#print-area{display:block!important;color:#111;font-family:Arial,sans-serif}#print-area h1{font-size:22px}#print-area table{border-collapse:collapse;width:100%;font-size:9px}#print-area td{border:1px solid #ddd;padding:5px 7px;vertical-align:middle}#print-area .print-meta{font-size:11px;color:#666} @page{size:A4 landscape;margin:12mm}}
+
+/* Number-format controls share the existing native dialog and theme. */
+.format-layout { display:grid; grid-template-columns:150px minmax(0,1fr); gap:24px; min-height:285px; }
+.format-categories { height:245px; }
+.format-categories option { padding:7px 9px; }
+.format-sample { display:block; min-height:48px; padding:14px; margin-bottom:20px; background:var(--surface); border:1px solid var(--line); border-radius:6px; overflow-wrap:anywhere; }
+@media (max-width:520px) { .format-layout { grid-template-columns:115px minmax(0,1fr); gap:12px; } }

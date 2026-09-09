@@ -36,7 +36,7 @@ Local autosave belongs to the current browser profile and origin. It is not clou
 |---|---|
 | Interface | Excel-inspired title bar, ribbon tabs, formula bar, address box, contextual menus, worksheet tabs, status bar, command search, light/dark mode, zoom, selection statistics |
 | Editing | Native text editing, formula-bar editing, keyboard navigation, range and header selection, copy/cut/paste, formula-aware relative copy, fill down/right, drag fill, two-seed numeric sequences, clear, undo/redo |
-| Formatting | Font family/size, bold/italic/underline, text/fill colors, horizontal alignment, wrapping, merged cells, basic borders, number/currency/percent/date formats, decimal precision, table styles |
+| Formatting | Font family/size, bold/italic/underline, text/fill colors, horizontal alignment, wrapping, merged cells, basic borders, Format Cells dialog with number/currency/percent/date/time/text formats, decimal precision, row/column defaults, table styles |
 | Worksheet operations | Add, rename, duplicate, delete; insert/delete a row or column; resize/autofit; frozen rows and columns; gridline visibility; UI-only read-only mode |
 | Calculation | 83 registered function names; safe tokenizer and Pratt parser; relative/absolute/mixed A1 references; rectangular and whole-column references; cross-sheet references; workbook names; lazy conditionals; error propagation; dependency-driven cache invalidation |
 | Data tools | Header-aware stable sorting, value filters, duplicate-row removal, find/replace, cell notes, conditional color rules, data bars, cell inspector |
@@ -100,6 +100,14 @@ gridline.setWorkbook(next); // Replaces the current local workspace.
 
 Use `Workbook.setRaw`, `setCell`, `transaction`, `applyStyle`, and structural methods for edits. Mutating a sheet's cell map directly bypasses dependency invalidation, history and notifications; direct-map writes are reserved for controlled bulk construction inside `mutate` or before the workbook is observed.
 
+## Cell, column and row formatting
+
+Right-click a cell, selection, column header or row header and choose **Format cells…**, or press **Ctrl/⌘ + 1**. The Number group in the Home ribbon also opens the dialog. Choose General, Number, Currency, Date, Time, Percentage or Text, with a live sample, 0–10 decimal places, thousands separators, six currency symbols and common date/time presets. Font, alignment, fill and borders remain available in the ribbon.
+
+Column and row defaults apply to future entries without creating empty cells or expanding the used range. Explicit cell properties take precedence over row defaults, then column defaults. Applying formatting to a whole row or column updates the selected properties of existing cells and retains unrelated properties. Row defaults take precedence at otherwise unformatted row/column intersections. Undo/redo and native `.gridline` save/load retain these defaults; XLSX writes row/column styles and resolved styles for stored cells. Clear contents retains formatting; Clear all on a whole row/column removes its defaults.
+
+Date/time cells retain numeric serial values for calculations. Selecting or editing a literal date shows a readable date; formulas remain formulas. Enter dates as `yyyy-mm-dd` or `m/d/yyyy` with a four-digit year, and times as `hh:mm` or `hh:mm:ss`, optionally followed by AM/PM. Date/time parsing applies to date/time-formatted cells, including pasted text. Invalid calendar dates are rejected. Formatting existing text does not convert it into a date or number. Text format preserves leading zeros in new entries. Full Excel custom-format syntax, regional calendars and cell protection are outside this dialog's scope.
+
 ## Formula coverage
 
 `SUM`, `AVERAGE`, `MIN`, `MAX`, `COUNT`, `COUNTA`, `COUNTBLANK`, `PRODUCT`, `MEDIAN`, `SUMPRODUCT`; `SUMIF/SUMIFS`, `COUNTIF/COUNTIFS`, `AVERAGEIF/AVERAGEIFS`; `IF`, `IFS`, `IFERROR`, `IFNA`, `CHOOSE`; `AND`, `OR`, `NOT`, `XOR`; `INDEX`, `MATCH`, `VLOOKUP`, `XLOOKUP`; text, rounding, trigonometry, number predicates, date functions and volatile functions are registered. The in-app **Formulas → Insert function** dialog lists every supported name and description.
@@ -118,9 +126,9 @@ Structural row/column edits update supported numbered cell references and merges
 
 ## Tests
 
-At release, **123 Node tests** and **33 browser integration checks** pass. The browser suite covers actual UI typing, undo/redo, formula-bar commits, native paste events, internal clipboard operations, fills, formatting, sheets, notes, sorting, filtering, find/replace, stored and DEFLATE-compressed XLSX round-trips, 1904-date rejection, stress-sheet viewport behavior, theme and zoom.
+At release, **132 Node tests** and **45 browser integration checks** pass. The browser suite covers actual UI typing, undo/redo, formula-bar commits, native paste events, internal clipboard operations, fills, formatting, sheets, notes, sorting, filtering, find/replace, stored and DEFLATE-compressed XLSX round-trips, 1904-date rejection, stress-sheet viewport behavior, theme and zoom.
 
-The release browser run used Chromium 144 and the **Canvas2D fallback**. The managed test harness provided an opaque origin with no WebGPU API exposure; consequently **GPU pipeline execution and hardware performance were not verified**. Autosave was exercised against an in-memory Storage fixture, not a persistent browser profile. See [TEST_REPORT.md](docs/TEST_REPORT.md) and [machine-readable results](docs/browser-test-results.json).
+The release browser run used Chromium 149 and the **Canvas2D fallback**. The managed test harness provided an opaque origin with no WebGPU API exposure; consequently **GPU pipeline execution and hardware performance were not verified**. Autosave was exercised against an in-memory Storage fixture, not a persistent browser profile. See [TEST_REPORT.md](docs/TEST_REPORT.md) and [machine-readable results](docs/browser-test-results.json).
 
 Optional browser checks require Python Playwright and an installed Chromium/Chrome executable:
 

@@ -149,6 +149,99 @@ with sync_playwright() as p:
     check('Theme toggle updates renderer state', page.evaluate('gridline.renderer.dark') is True)
     page.locator('[data-action="zoom-in"]').click()
     check('Zoom command updates the viewport transform', abs(page.evaluate('gridline.renderer.zoom')-1.1)<1e-9)
+    # Formatting must survive real UI editing and both workbook formats.
+    page.evaluate('gridline.setWorkbook(new Gridline.Workbook()); gridline.renderer.setZoom(1)')
+    host = page.locator('#grid-host').bounding_box()
+    point = page.evaluate('gridline.renderer.cellRect(0,1)')
+    page.mouse.click(host['x'] + point['x'] + point['w']/2, host['y'] + 12, button='right')
+    page.locator('#context-menu [data-action="format-cells"]').click()
+    page.locator('#format-category').select_option('date')
+    page.locator('#format-pattern').select_option('yyyy-mm-dd')
+    page.locator('#format-apply').click()
+    check('Right-click column formatting creates one sparse default', page.evaluate('gridline.sheet.colStyles.size === 1 && gridline.sheet.cells.size === 0 && gridline.sheet.colStyles.has(1)'))
+    goto('B1000')
+    page.keyboard.type('2026-09-08')
+    page.keyboard.press('Enter')
+    goto('B1000')
+    check('Date entry uses a serial internally and a readable formula bar', isinstance(val(999,1),(int,float)) and page.locator('#formula-input').input_value() == '2026-09-08')
+    before = val(999,1)
+    page.keyboard.press('F2')
+    check('Date editor shows a readable date', page.locator('#cell-editor').input_value() == '2026-09-08')
+    page.keyboard.press('Enter')
+    check('Unchanged date editing preserves the numeric value', val(999,1) == before)
+    goto('B1000')
+    page.keyboard.press('F2')
+    page.locator('#cell-editor').fill('2025-02-29')
+    page.keyboard.press('Enter')
+    check('Invalid dates keep the editor open and the original value', page.evaluate('gridline.editing') and val(999,1) == before)
+    page.keyboard.press('Escape')
+    page.keyboard.press('Control+1')
+    page.locator('#format-category').select_option('currency')
+    page.locator('#format-currency').select_option('EUR')
+    page.locator('#format-decimals').fill('2')
+    page.locator('#format-apply').click()
+    check('Keyboard format dialog changes only presentation', val(999,1) == before and page.evaluate('gridline.workbook.display(gridline.sheet,999,1).startsWith("€")'))
+    page.evaluate('gridline.workbook.undo()')
+    page.keyboard.press('Control+1')
+    page.locator('#format-category').select_option('number')
+    page.locator('#dialog [data-action="close-dialog"]').last.click()
+    check('Cancel discards format changes', page.evaluate('gridline.workbook.display(gridline.sheet,999,1)') == '2026-09-08')
+    goto('A1')
+    point = page.evaluate('gridline.renderer.cellRect(2,0)')
+    page.mouse.click(host['x'] + 12, host['y'] + point['y'] + point['h']/2, button='right')
+    page.locator('#context-menu [data-action="format-cells"]').click()
+    page.locator('#format-category').select_option('percent')
+    page.locator('#format-decimals').fill('1')
+    page.locator('#format-apply').click()
+    check('Right-click row formatting creates a sparse row default', page.evaluate('gridline.sheet.rowStyles.has(2) && gridline.sheet.cells.size === 1'))
+    roundtrip = page.evaluate("""async () => {
+      const w = gridline.workbook, s = gridline.sheet;
+      w.setRaw(s,2,4,'0.125');
+      w.applyStyle(s,{r1:0,r2:1048575,c1:3,c2:3},{format:'time',pattern:'h:mm AM/PM'});
+      w.setRaw(s,0,3,'13:30');
+      w.applyStyle(s,{r1:0,r2:1048575,c1:5,c2:5},{format:'currency',currency:'CAD',decimals:3,grouping:false});
+      w.setRaw(s,0,5,'1234.567');
+      w.applyStyle(s,{r1:1,r2:1,c1:5,c2:5},{format:'general'}); w.setRaw(s,1,5,'42');
+      w.applyStyle(s,{r1:3,r2:3,c1:0,c2:16383},{format:'general'}); w.setRaw(s,3,5,'43');
+      const expected = [[999,1],[2,4],[0,3],[0,5],[1,5],[3,5]].map(([r,c])=>w.display(s,r,c));
+      gridline.persist();
+      const native = Gridline.Workbook.fromJSON(JSON.parse(localStorage.getItem('gridline.workbook.v1')));
+      const imported = (await Gridline.importXLSX(Gridline.exportXLSX(w))).workbook;
+      const results = [native,imported].map(book => {
+        const sheet = book.activeSheet, display = [[999,1],[2,4],[0,3],[0,5],[1,5],[3,5]].map(([r,c])=>book.display(sheet,r,c));
+        book.setRaw(sheet,5000,1,'2027-01-02'); book.setRaw(sheet,5000,3,'09:15'); book.setRaw(sheet,5000,5,'10.5');
+        return {display, future:[book.display(sheet,5000,1),book.display(sheet,5000,3),book.display(sheet,5000,5)], size:sheet.cells.size};
+      });
+      gridline.setWorkbook(imported);
+      return {expected,results};
+    }""")
+    check('Native save and XLSX preserve date/time/currency/row formats', all(r['display'] == roundtrip['expected'] for r in roundtrip['results']), roundtrip)
+    check('Loaded column defaults apply to future entries without expanding the sheet', all(r['future'] == ['2027-01-02','9:15 AM','CA$10.500'] and r['size'] == 9 for r in roundtrip['results']), roundtrip)
+    goto('F1')
+    page.keyboard.press('Control+1')
+    page.screenshot(path='/tmp/gridline-format-dialog.png', full_page=True)
+    page.locator('#dialog [data-action="close-dialog"]').last.click()
+    security = page.evaluate("""async () => {
+      const payload = '0"><img src="data:image/png;base64,AA==" onerror="window.__formatInjection=1"><input value="0';
+      const original = gridline.workbook, rejected = [];
+      for (const location of ['cells','rowStyles','colStyles']) {
+        const data = new Gridline.Workbook().toJSON(), style = {format:'number',decimals:payload};
+        data.sheets[0][location] = location === 'cells' ? [['0,0',{raw:'',style}]] : [[0,style]];
+        try { await gridline.openFile(new File([JSON.stringify(data)], 'untrusted.gridline')); rejected.push(false); }
+        catch (error) { rejected.push(error.message.includes('Invalid decimal places')); }
+      }
+      const preserved = gridline.workbook === original;
+      // Bypass import validation to exercise safe rendering independently.
+      const workbook = new Gridline.Workbook();
+      workbook.setCell(workbook.activeSheet,0,0,{raw:'',style:{format:'number',decimals:payload}});
+      gridline.setWorkbook(workbook); gridline.showFormatCells();
+      await new Promise(resolve => setTimeout(resolve,100));
+      const safe = !window.__formatInjection && !document.querySelector('#format-options img') && document.querySelector('#format-decimals').value === '2';
+      gridline.closeDialog();
+      return {rejected,preserved,safe};
+    }""")
+    check('Malicious decimal settings are rejected from cell, row, and column file styles', all(security['rejected']) and security['preserved'], security)
+    check('Format dialog treats hostile precision as data even if import validation is bypassed', security['safe'], security)
     check('Browser interactions produce no uncaught JavaScript errors', not errors, errors)
     report={'harness':'served origin' if args.url else 'inline opaque origin, in-memory Storage fixture','browser':browser.version,'backend':backend,'passed':len(checks),'checks':checks,'stressMetrics':metrics,'uncaughtErrors':errors,'notes':['GPU execution is verified only when backend is webgpu.','CPU frame measurement is not GPU completion time or a cross-machine benchmark.','In-memory storage fixture does not validate real browser persistence.']}
     (ROOT/'docs/browser-test-results.json').write_text(json.dumps(report,indent=2))

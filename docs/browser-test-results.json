@@ -1,11 +1,11 @@
 {
   "harness": "inline opaque origin, in-memory Storage fixture",
-  "browser": "143.0.7499.4",
+  "browser": "149.0.7827.53",
   "backend": {
     "backend": "canvas2d",
     "reason": "WebGPU is not exposed by this browser."
   },
-  "passed": 33,
+  "passed": 45,
   "checks": [
     {
       "name": "Standalone app boots without an uncaught exception",
@@ -121,7 +121,7 @@
       "name": "XLSX export/import round-trip preserves calculated values",
       "passed": true,
       "detail": {
-        "bytes": 121828,
+        "bytes": 121844,
         "sheets": 3,
         "mismatches": [],
         "mergeCount": 24,
@@ -129,7 +129,7 @@
         "freeze": 1,
         "name": "Assumptions!$B$3",
         "style": {
-          "format": "general",
+          "fontFamily": "Aptos",
           "bold": true,
           "italic": false,
           "underline": false,
@@ -167,7 +167,7 @@
       "name": "Stress sheet creates 80,008 sparse cells",
       "passed": true,
       "detail": {
-        "wall_ms": 303.04
+        "wall_ms": 128.04
       }
     },
     {
@@ -183,7 +183,7 @@
       "passed": true,
       "detail": {
         "visibleCells": 576,
-        "lastFrameCPUms": 4.400000000008731,
+        "lastFrameCPUms": 1.7000000476837158,
         "storedCells": 80008,
         "active": {
           "r": 10000,
@@ -202,6 +202,168 @@
       "detail": null
     },
     {
+      "name": "Right-click column formatting creates one sparse default",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Date entry uses a serial internally and a readable formula bar",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Date editor shows a readable date",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Unchanged date editing preserves the numeric value",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Invalid dates keep the editor open and the original value",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Keyboard format dialog changes only presentation",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Cancel discards format changes",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Right-click row formatting creates a sparse row default",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Native save and XLSX preserve date/time/currency/row formats",
+      "passed": true,
+      "detail": {
+        "expected": [
+          "2026-09-08",
+          "12.5%",
+          "1:30 PM",
+          "CA$1234.567",
+          "42",
+          "43"
+        ],
+        "results": [
+          {
+            "display": [
+              "2026-09-08",
+              "12.5%",
+              "1:30 PM",
+              "CA$1234.567",
+              "42",
+              "43"
+            ],
+            "future": [
+              "2027-01-02",
+              "9:15 AM",
+              "CA$10.500"
+            ],
+            "size": 9
+          },
+          {
+            "display": [
+              "2026-09-08",
+              "12.5%",
+              "1:30 PM",
+              "CA$1234.567",
+              "42",
+              "43"
+            ],
+            "future": [
+              "2027-01-02",
+              "9:15 AM",
+              "CA$10.500"
+            ],
+            "size": 9
+          }
+        ]
+      }
+    },
+    {
+      "name": "Loaded column defaults apply to future entries without expanding the sheet",
+      "passed": true,
+      "detail": {
+        "expected": [
+          "2026-09-08",
+          "12.5%",
+          "1:30 PM",
+          "CA$1234.567",
+          "42",
+          "43"
+        ],
+        "results": [
+          {
+            "display": [
+              "2026-09-08",
+              "12.5%",
+              "1:30 PM",
+              "CA$1234.567",
+              "42",
+              "43"
+            ],
+            "future": [
+              "2027-01-02",
+              "9:15 AM",
+              "CA$10.500"
+            ],
+            "size": 9
+          },
+          {
+            "display": [
+              "2026-09-08",
+              "12.5%",
+              "1:30 PM",
+              "CA$1234.567",
+              "42",
+              "43"
+            ],
+            "future": [
+              "2027-01-02",
+              "9:15 AM",
+              "CA$10.500"
+            ],
+            "size": 9
+          }
+        ]
+      }
+    },
+    {
+      "name": "Malicious decimal settings are rejected from cell, row, and column file styles",
+      "passed": true,
+      "detail": {
+        "rejected": [
+          true,
+          true,
+          true
+        ],
+        "preserved": true,
+        "safe": true
+      }
+    },
+    {
+      "name": "Format dialog treats hostile precision as data even if import validation is bypassed",
+      "passed": true,
+      "detail": {
+        "rejected": [
+          true,
+          true,
+          true
+        ],
+        "preserved": true,
+        "safe": true
+      }
+    },
+    {
       "name": "Browser interactions produce no uncaught JavaScript errors",
       "passed": true,
       "detail": []
@@ -209,7 +371,7 @@
   ],
   "stressMetrics": {
     "visibleCells": 576,
-    "lastFrameCPUms": 4.400000000008731,
+    "lastFrameCPUms": 1.7000000476837158,
     "storedCells": 80008,
     "active": {
       "r": 10000,

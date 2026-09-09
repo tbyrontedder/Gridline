@@ -409,27 +409,90 @@ export function rawValue(raw) {
 }
 const formatters = new Map();
 function numFormat(locale, options, value) { const key = JSON.stringify([locale, options]); if (!formatters.has(key)) formatters.set(key, new Intl.NumberFormat(locale, options)); return formatters.get(key).format(value); }
+export const DATE_FORMATS = ['m/d/yyyy', 'mm/dd/yy', 'yyyy-mm-dd', 'mmm d, yyyy', 'dddd, mmmm d, yyyy', 'd-mmm-yy'];
+export const TIME_FORMATS = ['h:mm AM/PM', 'h:mm:ss AM/PM', 'hh:mm', 'hh:mm:ss', '[h]:mm:ss'];
+export const CURRENCIES = { USD: '$', EUR: '€', GBP: '£', JPY: '¥', CAD: 'CA$', AUD: 'A$' };
+export function numberFormatStyle(code = 'general') {
+  const defaults = { decimals:null, pattern:null, currency:'USD', grouping:true };
+  if (code === 'date' || DATE_FORMATS.includes(code)) return { ...defaults, format: 'date', pattern: code === 'date' ? 'mmm d, yyyy' : code };
+  if (code === 'time' || TIME_FORMATS.includes(code)) return { ...defaults, format: 'time', pattern: code === 'time' ? 'hh:mm:ss' : code };
+  if (code === '@') return { ...defaults, format: 'text' };
+  if (/^(general|number|integer|currency|percent|text)$/i.test(code)) return { ...defaults, format: code.toLowerCase() };
+  const match = /^(?:"([^"]+)"|([$€£¥]))?(#,##0|0)(?:\.(0{1,10}))?(%)?$/.exec(code);
+  if (match) return { ...defaults, format: match[5] ? 'percent' : match[1] || match[2] ? 'currency' : 'number', decimals: match[4]?.length ?? 0, grouping: match[3].includes(','), currency: Object.keys(CURRENCIES).find(c => CURRENCIES[c] === (match[1] || match[2])) || 'USD' };
+  return { ...defaults, format: code };
+}
+export function numberFormatCode(style = {}) {
+  const s = { ...numberFormatStyle(style.format), ...style }, fmt = s.format || 'general';
+  const d = Math.max(0, Math.min(10, s.decimals ?? (fmt === 'percent' ? 1 : fmt === 'number' ? 2 : 0))), decimal = d ? '.' + '0'.repeat(d) : '';
+  if (fmt === 'date') return s.pattern || 'mmm d, yyyy';
+  if (fmt === 'time') return s.pattern || 'hh:mm:ss';
+  if (fmt === 'text') return '@';
+  if (fmt === 'general') return s.decimals == null ? 'General' : '0' + decimal;
+  if (fmt === 'percent') return (s.grouping === false ? '0' : '#,##0') + decimal + '%';
+  if (fmt === 'number' || fmt === 'integer' || fmt === 'currency') return (fmt === 'currency' ? '"' + (CURRENCIES[s.currency] || '$') + '"' : '') + (s.grouping === false ? '0' : '#,##0') + decimal;
+  return fmt;
+}
 export function formatValue(value, style = {}) {
   if (value instanceof FormulaError) return value.code;
   if (value === null || value === undefined) return '';
   if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
   if (typeof value !== 'number') return String(value);
-  const fmt = style.format || 'general', dp = style.decimals;
-  if (fmt === 'date' || /[ymd]/i.test(fmt) && !/[Ee][+-]/.test(fmt) && fmt !== 'number' && fmt !== 'currency') return serialDate(value).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
-  if (fmt === 'percent' || fmt.includes('%')) return numFormat('en-US', { style: 'percent', minimumFractionDigits: dp ?? (fmt === 'percent' ? 1 : (fmt.split('.')[1]?.match(/[0#]/g)?.length ?? 0)), maximumFractionDigits: dp ?? (fmt === 'percent' ? 1 : (fmt.split('.')[1]?.match(/[0#]/g)?.length ?? 0)) }, value);
-  if (fmt === 'currency' || /[$€£]/.test(fmt)) return numFormat('en-US', { style: 'currency', currency: fmt.includes('€') ? 'EUR' : fmt.includes('£') ? 'GBP' : 'USD', minimumFractionDigits: dp ?? 0, maximumFractionDigits: dp ?? 0 }, value);
-  if (fmt === 'number' || fmt === 'integer' || /[0#]/.test(fmt)) { const d = dp ?? (fmt === 'integer' ? 0 : fmt === 'number' ? 2 : (fmt.split('.')[1]?.match(/[0#]/g)?.length ?? 0)); return numFormat('en-US', { useGrouping: true, minimumFractionDigits: d, maximumFractionDigits: d }, value); }
-  if (dp !== undefined) return numFormat('en-US', { useGrouping: false, minimumFractionDigits: dp, maximumFractionDigits: dp }, value);
+  const s = { ...style, ...numberFormatStyle(style.format) }, fmt = s.format || 'general';
+  // Explicit controls override values inferred from imported format codes.
+  for (const key of ['decimals', 'grouping', 'currency', 'pattern']) if (style[key] != null) s[key] = style[key];
+  if (fmt === 'date' || fmt === 'time') {
+    const pattern = s.pattern || (fmt === 'date' ? 'mmm d, yyyy' : 'hh:mm:ss'), date = serialDate(Math.floor(value));
+    if (!Number.isFinite(date.getTime())) return '########';
+    const totalSeconds = Math.round(value * 86400), seconds = (totalSeconds % 86400 + 86400) % 86400, h = Math.floor(seconds / 3600), m = Math.floor(seconds / 60) % 60, sec = seconds % 60;
+    const pad = n => String(n).padStart(2, '0');
+    if (fmt === 'time') return pattern.replace(/\[h\]|AM\/PM|hh|h|mm|ss/g, token => ({ '[h]': Math.floor(totalSeconds / 3600), 'AM/PM': h < 12 ? 'AM' : 'PM', hh: pad(h), h: pattern.includes('AM/PM') ? h % 12 || 12 : h, mm: pad(m), ss: pad(sec) })[token]);
+    const y = date.getUTCFullYear(), month = date.getUTCMonth(), day = Math.floor(value) === 60 ? 29 : date.getUTCDate();
+    const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    return pattern.replace(/yyyy|yy|mmmm|mmm|mm|m|dddd|ddd|dd|d/g, token => ({ yyyy: String(y).padStart(4, '0'), yy: pad(y % 100), mmmm: months[month], mmm: months[month].slice(0,3), mm: pad(month + 1), m: month + 1, dddd: ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][date.getUTCDay()], ddd: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][date.getUTCDay()], dd: pad(day), d: day })[token]);
+  }
+  const dp = Math.max(0, Math.min(10, s.decimals ?? (fmt === 'percent' ? 1 : fmt === 'number' ? 2 : 0)));
+  if (['number','integer','currency','percent'].includes(fmt) || s.decimals != null) {
+    const options = { useGrouping: fmt === 'general' ? false : s.grouping !== false, minimumFractionDigits: dp, maximumFractionDigits: dp };
+    if (fmt === 'percent') options.style = 'percent';
+    if (fmt === 'currency') { options.style = 'currency'; options.currency = CURRENCIES[s.currency] ? s.currency : 'USD'; }
+    return numFormat('en-US', options, value);
+  }
   return Math.abs(value) >= 1e12 || Math.abs(value) < 1e-8 && value !== 0 ? value.toExponential(5) : String(Number(value.toPrecision(12)));
+}
+// Only date/time-formatted inputs are parsed; arbitrary text and formulas stay untouched.
+export function formattedInput(raw, style = {}) {
+  raw = String(raw); const fmt = numberFormatStyle(style.format).format;
+  if (fmt === 'text' && raw && !raw.startsWith("'")) return "'" + raw;
+  if (!['date','time'].includes(fmt) || !raw || raw.startsWith('=') || raw.startsWith("'")) return raw;
+  const match = /^(?:(\d{4})-(\d{1,2})-(\d{1,2})|(\d{1,2})\/(\d{1,2})\/(\d{4}))(?:[ T](.+))?$/.exec(raw.trim());
+  let serial = 0, time = raw.trim();
+  if (match) {
+    const y = +(match[1] || match[6]), m = +(match[2] || match[4]), d = +(match[3] || match[5]);
+    const date = new Date(0); date.setUTCFullYear(y, m - 1, d); date.setUTCHours(0,0,0,0);
+    if (y === 1900 && m === 2 && d === 29) serial = 60;
+    else { if (y < 1900 || y > 9999 || date.getUTCFullYear() !== y || date.getUTCMonth() !== m - 1 || date.getUTCDate() !== d) throw new Error('Enter a valid date as yyyy-mm-dd or m/d/yyyy.'); serial = dateSerial(date); }
+    time = match[7] || '';
+  }
+  if (time) {
+    const t = /^(\d{1,6}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?\s*(AM|PM)?$/i.exec(time);
+    if (!t) { if (match) throw new Error('Enter time as hh:mm or hh:mm:ss, optionally with AM/PM.'); return raw; }
+    let h = +t[1]; const m = +t[2], sec = +t[3] || 0;
+    if (m > 59 || sec > 59 || (t[5] ? h < 1 || h > 12 : h > 23 && style.pattern !== '[h]:mm:ss')) throw new Error('Enter a valid time.');
+    if (t[5]) h = h % 12 + (t[5].toUpperCase() === 'PM' ? 12 : 0);
+    serial += (h * 3600 + m * 60 + sec + +(t[4] ? '0.' + t[4] : 0)) / 86400;
+  }
+  return match || time.includes(':') ? String(serial) : raw;
 }
 let nextSheetId = 1;
 export class Sheet {
   constructor(name = 'Sheet1', data = null) {
-    this.id = `s${Date.now().toString(36)}${nextSheetId++}`; this.name = name; this.cells = new Map(); this.colWidths = new Map(); this.rowHeights = new Map();
+    this.id = `s${Date.now().toString(36)}${nextSheetId++}`; this.name = name; this.cells = new Map(); this.colWidths = new Map(); this.rowHeights = new Map(); this.colStyles = new Map(); this.rowStyles = new Map();
     this.merges = []; this.conditionalRules = []; this.hiddenRows = new Set(); this.filters = null; this.freezeRows = 0; this.freezeCols = 0; this.charts = []; this.gridlines = true; this.color = '#18835a'; this.revision = 0; this._used = null;
-    if (data) { for (const prop of ['id','name','merges','conditionalRules','filters','freezeRows','freezeCols','charts','gridlines','color','revision','protected','dataRegion']) if (Object.hasOwn(data, prop)) this[prop] = data[prop]; this.cells = new Map(data.cells ?? []); this.colWidths = new Map(data.colWidths ?? []); this.rowHeights = new Map(data.rowHeights ?? []); this.hiddenRows = new Set(data.hiddenRows ?? []); this._used = null; }
+    if (data) { for (const prop of ['id','name','merges','conditionalRules','filters','freezeRows','freezeCols','charts','gridlines','color','revision','protected','dataRegion']) if (Object.hasOwn(data, prop)) this[prop] = data[prop]; this.colStyles = new Map(data.colStyles ?? []); this.rowStyles = new Map(data.rowStyles ?? []); this.cells = new Map(data.cells ?? []); this.colWidths = new Map(data.colWidths ?? []); this.rowHeights = new Map(data.rowHeights ?? []); this.hiddenRows = new Set(data.hiddenRows ?? []); this._used = null; }
   }
   get(r, c) { return this.cells.get(keyOf(r, c)); }
+  style(r, c) { return { ...this.colStyles.get(c), ...this.rowStyles.get(r), ...this.get(r, c)?.style }; }
   raw(r, c) { return this.get(r, c)?.raw ?? ''; }
   usedRange() {
     if (this._used) return this._used;
@@ -438,7 +501,7 @@ export class Sheet {
   }
   mergeAt(r, c) { return this.merges.find(q => r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2); }
   toJSON() {
-    const { _used, ...rest } = this; return { ...rest, cells: [...this.cells], colWidths: [...this.colWidths], rowHeights: [...this.rowHeights], hiddenRows: [...this.hiddenRows] };
+    const { _used, ...rest } = this; return { ...rest, cells: [...this.cells], colStyles: [...this.colStyles], rowStyles: [...this.rowStyles], colWidths: [...this.colWidths], rowHeights: [...this.rowHeights], hiddenRows: [...this.hiddenRows] };
   }
 }
 export class Workbook {
@@ -455,6 +518,11 @@ export class Workbook {
       if (!Array.isArray(d.cells) || d.cells.length > 1000000) throw new Error('Workbook cell limit exceeded.');
       const sheet = new Sheet(String(d.name).slice(0, 31), d); sheet.name = String(d.name).slice(0, 31);
       for (const [k, cell] of sheet.cells) { const [r, c] = k.split(',').map(Number); if (!Number.isInteger(r) || !Number.isInteger(c) || r < 0 || c < 0 || r >= MAX_ROWS || c >= MAX_COLS || typeof cell.raw !== 'string') throw new Error('Invalid cell record.'); }
+      for (const [prop, limit] of [['colStyles', MAX_COLS], ['rowStyles', MAX_ROWS]]) for (const [i, style] of sheet[prop]) if (!Number.isInteger(i) || i < 0 || i >= limit || !style || typeof style !== 'object' || Array.isArray(style)) throw new Error('Invalid row or column style.');
+      for (const records of [sheet.cells, sheet.colStyles, sheet.rowStyles]) for (const record of records.values()) {
+        const decimals = records === sheet.cells ? record.style?.decimals : record.decimals;
+        if (decimals != null && (!Number.isInteger(decimals) || decimals < 0 || decimals > 10)) throw new Error('Invalid decimal places: expected an integer from 0 to 10.');
+      }
       return sheet;
     });
     if (new Set(wb.sheets.map(s => s.id)).size !== wb.sheets.length || new Set(wb.sheets.map(s => s.name.toLowerCase())).size !== wb.sheets.length) throw new Error('Duplicate sheet identities.');
@@ -462,7 +530,7 @@ export class Workbook {
   }
   restore(data) { const w = Workbook.fromJSON(data); this.title = w.title; this.sheets = w.sheets; this.activeSheetId = w.activeSheetId; this.names = w.names; this.engine.invalidate(); }
   value(sheet, r, c) { return this.engine.get(sheet, r, c); }
-  display(sheet, r, c) { const cell = sheet.get(r, c); let style = cell?.style ?? {}; if (!style.format && cell?.raw.trim().endsWith('%')) style = { ...style, format: 'percent' }; return formatValue(this.value(sheet, r, c), style); }
+  display(sheet, r, c) { const cell = sheet.get(r, c); let style = sheet.style(r, c); if (!style.format && cell?.raw.trim().endsWith('%')) style = { ...style, format: 'percent' }; return formatValue(this.value(sheet, r, c), style); }
   transaction(label, fn) {
     if (this._transaction) return fn();
     const tx = { label, changes: new Map() }; this._transaction = tx;
@@ -490,9 +558,36 @@ export class Workbook {
     sheet.revision++; sheet._used = null;
     this.engine.invalidate([id]);
   }
-  setRaw(sheet, r, c, raw) { this.setCell(sheet, r, c, { raw: String(raw) }); }
-  applyStyle(sheet, q, style) { this.transaction('Format cells', () => { for (const { r, c } of cellsIn(q)) this.setCell(sheet, r, c, { style }); }); }
-  clear(sheet, q, all = false) { this.transaction('Clear cells', () => { for (const [key] of sheet.cells) { const [r, c] = key.split(',').map(Number); if (r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2) this.setCell(sheet, r, c, all ? null : { raw: '' }); } }); }
+  editValue(sheet, r, c) {
+    const raw = sheet.raw(r, c), value = rawValue(raw), style = sheet.style(r, c), fmt = numberFormatStyle(style.format).format;
+    if (raw.startsWith('=') || typeof value !== 'number' || !['date','time'].includes(fmt)) return raw;
+    if (fmt === 'time' && value >= 0 && value < 1) return formatValue(value, { format: 'time', pattern: 'hh:mm:ss' });
+    if (fmt === 'time' && style.pattern === '[h]:mm:ss') return formatValue(value, style);
+    return formatValue(value, { format: 'date', pattern: 'yyyy-mm-dd' }) + (value % 1 ? ' ' + formatValue(value, { format: 'time', pattern: 'hh:mm:ss' }) : '');
+  }
+  setRaw(sheet, r, c, raw) { this.setCell(sheet, r, c, { raw: formattedInput(raw, sheet.style(r, c)) }); }
+  applyStyle(sheet, q, style) {
+    if (Object.hasOwn(style, 'format')) style = { decimals: null, pattern: null, currency: 'USD', grouping: true, ...style, decimals: style.decimals ?? null };
+    const columns = q.r1 === 0 && q.r2 === MAX_ROWS - 1, rows = q.c1 === 0 && q.c2 === MAX_COLS - 1;
+    if (!columns && !rows) return this.transaction('Format cells', () => { for (const { r, c } of cellsIn(q)) this.setCell(sheet, r, c, { style }); });
+    this.mutate('Format cells', () => {
+      const defaults = columns ? sheet.colStyles : sheet.rowStyles;
+      for (let i = columns ? q.c1 : q.r1; i <= (columns ? q.c2 : q.r2); i++) defaults.set(i, { ...defaults.get(i), ...clone(style) });
+      if (columns && rows) for (const [r, current] of sheet.rowStyles) sheet.rowStyles.set(r, { ...current, ...clone(style) });
+      // Touch only stored cells. New cells inherit defaults without allocation.
+      for (const [key, cell] of sheet.cells) { const [r,c] = key.split(',').map(Number); if (r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2) cell.style = { ...cell.style, ...clone(style) }; }
+    });
+  }
+  clear(sheet, q, all = false) {
+    const columns = q.r1 === 0 && q.r2 === MAX_ROWS - 1, rows = q.c1 === 0 && q.c2 === MAX_COLS - 1;
+    if (all && (columns || rows)) return this.mutate('Clear all', () => {
+      if (columns) for (const c of sheet.colStyles.keys()) if (c >= q.c1 && c <= q.c2) sheet.colStyles.delete(c);
+      if (rows) for (const r of sheet.rowStyles.keys()) if (r >= q.r1 && r <= q.r2) sheet.rowStyles.delete(r);
+      for (const [key] of sheet.cells) { const [r,c] = key.split(',').map(Number); if (r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2) sheet.cells.delete(key); }
+    });
+    this.transaction('Clear cells', () => { for (const [key] of sheet.cells) { const [r, c] = key.split(',').map(Number); if (r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2) this.setCell(sheet, r, c, all ? null : { raw: '' }); } });
+  }
+
   mutate(label, fn) {
     const before = clone(this.toJSON());
     try { fn(); } catch (e) { this.restore(before); throw e; }
@@ -527,7 +622,7 @@ export class Workbook {
   fill(sheet, source, target) {
     this.transaction('Fill cells', () => {
       const h = source.r2 - source.r1 + 1, w = source.c2 - source.c1 + 1;
-      const originals = new Map(); for (const p of cellsIn(source)) originals.set(keyOf(p.r, p.c), clone(sheet.get(p.r, p.c) ?? { raw: '' }));
+      const originals = new Map(); for (const p of cellsIn(source)) originals.set(keyOf(p.r, p.c), clone({ ...(sheet.get(p.r, p.c) ?? { raw: '' }), style: sheet.style(p.r, p.c) }));
       const verticalSeries = w === 1 && h === 2 && [source.r1, source.r2].every(r => typeof rawValue(sheet.raw(r, source.c1)) === 'number');
       const horizontalSeries = h === 1 && w === 2 && [source.c1, source.c2].every(c => typeof rawValue(sheet.raw(source.r1, c)) === 'number');
       for (const { r, c } of cellsIn(target)) {
@@ -545,8 +640,7 @@ export class Workbook {
       const coord = axis === 'row' ? 0 : 1, limit = axis === 'row' ? MAX_ROWS : MAX_COLS, next = new Map();
       for (const [key, cell] of sheet.cells) { const p = key.split(',').map(Number); if (delta < 0 && p[coord] === at) continue; if (p[coord] >= at) p[coord] += delta; if (p[coord] < limit) next.set(keyOf(...p), cell); }
       sheet.cells = next;
-      const sizes = axis === 'row' ? 'rowHeights' : 'colWidths', mapped = new Map();
-      for (const [i, size] of sheet[sizes]) { if (delta < 0 && i === at) continue; const n = i >= at ? i + delta : i; if (n < limit) mapped.set(n, size); } sheet[sizes] = mapped;
+      for (const prop of axis === 'row' ? ['rowHeights','rowStyles'] : ['colWidths','colStyles']) { const mapped = new Map(); for (const [i, value] of sheet[prop]) { if (delta < 0 && i === at) continue; const n = i >= at ? i + delta : i; if (n < limit) mapped.set(n, value); } sheet[prop] = mapped; }
       sheet.hiddenRows.clear(); sheet.filters = null; sheet.dataRegion = null;
       const a = axis === 'row' ? 'r1' : 'c1', b = axis === 'row' ? 'r2' : 'c2';
       sheet.merges = sheet.merges.filter(q => !(delta < 0 && q[a] === at && q[b] === at)).map(q => { const n = { ...q }; if (delta > 0) { if (n[a] >= at) n[a]++; if (n[b] >= at) n[b]++; } else { if (n[a] > at) n[a]--; if (n[b] >= at) n[b]--; } return n; });

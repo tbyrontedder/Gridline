@@ -1,5 +1,5 @@
 /** Local-only CSV / Gridline JSON / basic OOXML interoperability. No third-party libraries. */
-import { Workbook, Sheet, keyOf, address, parseAddress, parseRange, shiftFormula, FormulaError, rawValue } from './engine.js';
+import { Workbook, Sheet, keyOf, address, parseAddress, parseRange, shiftFormula, FormulaError, rawValue, numberFormatCode, numberFormatStyle } from './engine.js';
 export function parseDelimited(text, delimiter = null) {
   text = text.replace(/^\uFEFF/, '');
   if (!delimiter) { const first = text.split(/\r?\n/, 1)[0]; delimiter = first.includes('\t') ? '\t' : first.split(';').length > first.split(',').length ? ';' : ','; }
@@ -98,15 +98,14 @@ const colorARGB = color => 'FF' + (color || '#000000').replace('#', '').toUpperC
 function styleTable(workbook) {
   const styles = [{}], ids = new Map([['{}', 0]]);
   const idFor = style => { const normalized = Object.fromEntries(Object.entries(style ?? {}).filter(([, v]) => v !== undefined).sort(([a], [b]) => a.localeCompare(b))); const key = JSON.stringify(normalized); if (!ids.has(key)) { ids.set(key, styles.length); styles.push(normalized); } return ids.get(key); };
-  for (const sheet of workbook.sheets) for (const cell of sheet.cells.values()) idFor(cell.style);
+  for (const sheet of workbook.sheets) { for (const style of [...sheet.colStyles.values(), ...sheet.rowStyles.values()]) idFor(style); for (const [key] of sheet.cells) { const [r,c] = key.split(',').map(Number); idFor(sheet.style(r,c)); } }
   const formats = new Map(), fonts = [], fills = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'], xfs = [];
   styles.forEach((s, i) => {
     const size = (s.fontSize ?? 13) * 0.75; fonts.push(`<font>${s.bold ? '<b/>' : ''}${s.italic ? '<i/>' : ''}${s.underline ? '<u/>' : ''}<sz val="${size}"/><color rgb="${colorARGB(s.color || '#293b32')}"/><name val="${escapeXML(s.fontFamily?.split(',')[0] || 'Aptos')}"/></font>`);
     let fillId = 0; if (s.fill) { fillId = fills.length; fills.push(`<fill><patternFill patternType="solid"><fgColor rgb="${colorARGB(s.fill)}"/><bgColor indexed="64"/></patternFill></fill>`); }
-    let fmt = s.format || 'general'; const d = Math.max(0, Math.min(10, s.decimals ?? (fmt === 'percent' ? 1 : fmt === 'number' ? 2 : 0))), decimals = d ? '.' + '0'.repeat(d) : '';
-    fmt = fmt === 'general' ? 'General' : fmt === 'currency' ? '$#,##0' + decimals : fmt === 'percent' ? '0' + decimals + '%' : fmt === 'integer' ? '#,##0' : fmt === 'number' ? '#,##0' + decimals : fmt === 'date' ? 'mmm d, yyyy' : fmt;
+    const fmt = numberFormatCode(s);
     let numFmtId = 0; if (fmt !== 'General') { if (!formats.has(fmt)) formats.set(fmt, 164 + formats.size); numFmtId = formats.get(fmt); }
-    xfs.push(`<xf numFmtId="${numFmtId}" fontId="${i}" fillId="${fillId}" borderId="${s.border ? 1 : 0}" xfId="0" applyFont="1" applyFill="1" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center"${s.align ? ` horizontal="${s.align}"` : ''}${s.wrap ? ' wrapText="1"' : ''}/></xf>`);
+    xfs.push(`<xf numFmtId="${numFmtId}" fontId="${i}" fillId="${fillId}" borderId="${s.border ? 1 : 0}" xfId="0" applyFont="1" applyFill="1" applyNumberFormat="${s.format || s.decimals != null ? 1 : 0}" applyAlignment="1"><alignment vertical="center"${s.align ? ` horizontal="${s.align}"` : ''}${s.wrap ? ' wrapText="1"' : ''}/></xf>`);
   });
   const xml = xmlHeader + `<styleSheet xmlns="${spreadsheetNS}"><numFmts count="${formats.size}">${[...formats].map(([code, id]) => `<numFmt numFmtId="${id}" formatCode="${escapeXML(code)}"/>`).join('')}</numFmts><fonts count="${fonts.length}">${fonts.join('')}</fonts><fills count="${fills.length}">${fills.join('')}</fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border>${['left','right','top','bottom'].map(x => `<${x} style="thin"><color rgb="FFD4DFD8"/></${x}>`).join('')}<diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${xfs.length}">${xfs.join('')}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
   return { xml, idFor };
@@ -122,7 +121,7 @@ export function exportXLSX(workbook) {
     const rows = new Map();
     for (const [key, cell] of sheet.cells) {
       const [r, c] = key.split(',').map(Number); if (!rows.has(r)) rows.set(r, []);
-      const ref = address(r, c), sid = styles.idFor(cell.style), val = workbook.value(sheet, r, c), formula = cell.raw.startsWith('=') ? `<f>${escapeXML(cell.raw.slice(1))}</f>` : '';
+      const ref = address(r, c), sid = styles.idFor(sheet.style(r, c)), val = workbook.value(sheet, r, c), formula = cell.raw.startsWith('=') ? `<f>${escapeXML(cell.raw.slice(1))}</f>` : '';
       let type = '', content = '';
       if (val instanceof FormulaError) { type = ' t="e"'; content = `<v>${escapeXML(val.code)}</v>`; }
       else if (typeof val === 'number') content = `<v>${val}</v>`;
@@ -131,10 +130,10 @@ export function exportXLSX(workbook) {
       else if (val !== null && val !== undefined) { type = ' t="inlineStr"'; content = `<is><t xml:space="preserve">${escapeXML(val)}</t></is>`; }
       rows.get(r).push({ c, xml: `<c r="${ref}" s="${sid}"${type}>${formula}${content}</c>` });
     }
-    for (const [r] of sheet.rowHeights) if (!rows.has(r)) rows.set(r, []);
-    const rowXML = [...rows].sort(([a], [b]) => a - b).map(([r, cells]) => `<row r="${r + 1}"${sheet.rowHeights.has(r) ? ` ht="${sheet.rowHeights.get(r) * 0.75}" customHeight="1"` : ''}${sheet.hiddenRows.has(r) ? ' hidden="1"' : ''}>${cells.sort((a, b) => a.c - b.c).map(c => c.xml).join('')}</row>`).join('');
+    for (const r of new Set([...sheet.rowHeights.keys(), ...sheet.rowStyles.keys()])) if (!rows.has(r)) rows.set(r, []);
+    const rowXML = [...rows].sort(([a], [b]) => a - b).map(([r, cells]) => `<row r="${r + 1}"${sheet.rowStyles.has(r) ? ` s="${styles.idFor(sheet.rowStyles.get(r))}" customFormat="1"` : ''}${sheet.rowHeights.has(r) ? ` ht="${sheet.rowHeights.get(r) * 0.75}" customHeight="1"` : ''}${sheet.hiddenRows.has(r) ? ' hidden="1"' : ''}>${cells.sort((a, b) => a.c - b.c).map(c => c.xml).join('')}</row>`).join('');
     const pane = sheet.freezeRows || sheet.freezeCols ? `<pane xSplit="${sheet.freezeCols}" ySplit="${sheet.freezeRows}" topLeftCell="${address(sheet.freezeRows, sheet.freezeCols)}" activePane="${sheet.freezeRows && sheet.freezeCols ? 'bottomRight' : sheet.freezeRows ? 'bottomLeft' : 'topRight'}" state="frozen"/>` : '';
-    files[`xl/worksheets/sheet${i + 1}.xml`] = xmlHeader + `<worksheet xmlns="${spreadsheetNS}"><dimension ref="A1:${address(sheet.usedRange().r2, sheet.usedRange().c2)}"/><sheetViews><sheetView workbookViewId="0" showGridLines="${sheet.gridlines ? 1 : 0}">${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="20.25"/>${sheet.colWidths.size ? '<cols>' + [...sheet.colWidths].map(([c, w]) => `<col min="${c + 1}" max="${c + 1}" width="${Math.max(1, (w - 5) / 7)}" customWidth="1"/>`).join('') + '</cols>' : ''}<sheetData>${rowXML}</sheetData>${sheet.filters ? `<autoFilter ref="${address(sheet.filters.range.r1, sheet.filters.range.c1)}:${address(sheet.filters.range.r2, sheet.filters.range.c2)}"/>` : ''}${sheet.merges.length ? `<mergeCells count="${sheet.merges.length}">${sheet.merges.map(m => `<mergeCell ref="${address(m.r1, m.c1)}:${address(m.r2, m.c2)}"/>`).join('')}</mergeCells>` : ''}<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`;
+    files[`xl/worksheets/sheet${i + 1}.xml`] = xmlHeader + `<worksheet xmlns="${spreadsheetNS}"><dimension ref="A1:${address(sheet.usedRange().r2, sheet.usedRange().c2)}"/><sheetViews><sheetView workbookViewId="0" showGridLines="${sheet.gridlines ? 1 : 0}">${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="20.25"/>${sheet.colWidths.size || sheet.colStyles.size ? '<cols>' + [...new Set([...sheet.colWidths.keys(), ...sheet.colStyles.keys()])].sort((a,b) => a-b).map(c => `<col min="${c + 1}" max="${c + 1}"${sheet.colWidths.has(c) ? ` width="${Math.max(1, (sheet.colWidths.get(c) - 5) / 7)}" customWidth="1"` : ''}${sheet.colStyles.has(c) ? ` style="${styles.idFor(sheet.colStyles.get(c))}"` : ''}/>`).join('') + '</cols>' : ''}<sheetData>${rowXML}</sheetData>${sheet.filters ? `<autoFilter ref="${address(sheet.filters.range.r1, sheet.filters.range.c1)}:${address(sheet.filters.range.r2, sheet.filters.range.c2)}"/>` : ''}${sheet.merges.length ? `<mergeCells count="${sheet.merges.length}">${sheet.merges.map(m => `<mergeCell ref="${address(m.r1, m.c1)}:${address(m.r2, m.c2)}"/>`).join('')}</mergeCells>` : ''}<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`;
   });
   return zipStore(files);
 }
@@ -145,7 +144,7 @@ function readXML(bytes) {
 }
 const elements = (node, name) => [...node.getElementsByTagNameNS('*', name)];
 const firstElement = (node, name) => elements(node, name)[0];
-const builtinFormats = { 0: 'general', 1: 'integer', 2: 'number', 3: 'integer', 4: 'number', 9: '0%', 10: '0.00%', 14: 'date', 15: 'date', 16: 'date', 17: 'date', 22: 'date', 44: 'currency' };
+const builtinFormats = { 0: 'general', 1: 'integer', 2: 'number', 3: 'integer', 4: 'number', 9: '0%', 10: '0.00%', 14: 'm/d/yyyy', 15: 'd-mmm-yy', 16: 'date', 17: 'date', 18: 'h:mm AM/PM', 19: 'h:mm:ss AM/PM', 20: 'hh:mm', 21: 'hh:mm:ss', 22: 'date', 46: '[h]:mm:ss', 49: '@', 44: 'currency' };
 export async function importXLSX(buffer, title = 'Imported workbook') {
   const parts = await unzip(buffer), workbookDoc = readXML(parts.get('xl/workbook.xml')), relsDoc = readXML(parts.get('xl/_rels/workbook.xml.rels'));
   const dateSystem = firstElement(workbookDoc, 'workbookPr')?.getAttribute('date1904');
@@ -163,8 +162,8 @@ export async function importXLSX(buffer, title = 'Imported workbook') {
     const cssColor = el => { const rgb = el?.getAttribute('rgb'); return rgb ? '#' + rgb.slice(-6) : undefined; };
     styles = xfs.map(xf => {
       const font = fonts[+xf.getAttribute('fontId')], fill = fills[+xf.getAttribute('fillId')], alignment = firstElement(xf, 'alignment'), id = +xf.getAttribute('numFmtId');
-      const style = { format: formats.get(id) || builtinFormats[id] || 'general' };
-      if (font) { style.bold = !!firstElement(font, 'b'); style.italic = !!firstElement(font, 'i'); style.underline = !!firstElement(font, 'u'); const fs = firstElement(font, 'sz')?.getAttribute('val'); if (fs) style.fontSize = Math.min(72, +fs / 0.75); const color = cssColor(firstElement(font, 'color')); if (color) style.color = color; }
+      const style = xf.getAttribute('applyNumberFormat') === '0' && id === 0 ? {} : numberFormatStyle(formats.get(id) || builtinFormats[id] || 'general');
+      if (font) { const family = firstElement(font, 'name')?.getAttribute('val'); if (family) style.fontFamily = family; style.bold = !!firstElement(font, 'b'); style.italic = !!firstElement(font, 'i'); style.underline = !!firstElement(font, 'u'); const fs = firstElement(font, 'sz')?.getAttribute('val'); if (fs) style.fontSize = Math.min(72, +fs / 0.75); const color = cssColor(firstElement(font, 'color')); if (color) style.color = color; }
       const color = fill ? cssColor(firstElement(fill, 'fgColor')) : null; if (color && firstElement(fill, 'patternFill')?.getAttribute('patternType') === 'solid') style.fill = color;
       if (alignment) { const a = alignment.getAttribute('horizontal'); if (['left', 'center', 'right'].includes(a)) style.align = a; style.wrap = alignment.getAttribute('wrapText') === '1'; }
       if (+xf.getAttribute('borderId') > 0) style.border = true;
@@ -190,10 +189,10 @@ export async function importXLSX(buffer, title = 'Imported workbook') {
       else if (type === 'inlineStr') raw = "'" + elements(firstElement(cell, 'is') || cell, 't').map(t => t.textContent).join('');
       else if (type === 'str') raw = "'" + v;
       else if (type === 'b') raw = v === '1' ? 'TRUE' : 'FALSE';
-      sheet.cells.set(keyOf(ref.r, ref.c), { raw, style: structuredClone(styles[+cell.getAttribute('s')] || {}) });
+      sheet.cells.set(keyOf(ref.r, ref.c), { raw, ...(cell.hasAttribute('s') ? { style: structuredClone(styles[+cell.getAttribute('s')] || {}) } : {}) });
     }
-    for (const row of elements(doc, 'row')) { const r = +row.getAttribute('r') - 1; if (row.hasAttribute('ht')) sheet.rowHeights.set(r, Math.max(16, Math.min(400, +row.getAttribute('ht') / 0.75))); if (row.getAttribute('hidden') === '1') sheet.hiddenRows.add(r); }
-    for (const col of elements(doc, 'col')) { const min = +col.getAttribute('min') - 1, max = Math.min(16383, +col.getAttribute('max') - 1), width = +col.getAttribute('width') * 7 + 5; for (let c = Math.max(0, min); c <= max; c++) if (width) sheet.colWidths.set(c, Math.max(26, Math.min(1200, width))); }
+    for (const row of elements(doc, 'row')) { const r = +row.getAttribute('r') - 1; if (r < 0 || r >= 1048576) continue; if (row.hasAttribute('s')) sheet.rowStyles.set(r, structuredClone(styles[+row.getAttribute('s')] || {})); if (row.hasAttribute('ht')) sheet.rowHeights.set(r, Math.max(16, Math.min(400, +row.getAttribute('ht') / 0.75))); if (row.getAttribute('hidden') === '1') sheet.hiddenRows.add(r); }
+    for (const col of elements(doc, 'col')) { const min = +col.getAttribute('min') - 1, max = Math.min(16383, +col.getAttribute('max') - 1), width = +col.getAttribute('width') * 7 + 5; for (let c = Math.max(0, min); c <= max; c++) { if (col.hasAttribute('width')) sheet.colWidths.set(c, Math.max(26, Math.min(1200, width))); if (col.hasAttribute('style')) sheet.colStyles.set(c, structuredClone(styles[+col.getAttribute('style')] || {})); } }
     for (const cell of elements(doc, 'mergeCell')) { const q = parseRange(cell.getAttribute('ref')); if (q) sheet.merges.push(q); }
     const pane = firstElement(doc, 'pane'); if (pane?.getAttribute('state') === 'frozen') { sheet.freezeRows = Math.min(1000, +pane.getAttribute('ySplit') || 0); sheet.freezeCols = Math.min(100, +pane.getAttribute('xSplit') || 0); }
     const view = firstElement(doc, 'sheetView'); sheet.gridlines = view?.getAttribute('showGridLines') !== '0';

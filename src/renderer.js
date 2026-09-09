@@ -210,7 +210,7 @@ export class GridRenderer {
       const rect = this.cellRect(cellR, cellC), { x, y, w, h } = rect;
       const clip = [this.headerW + (c < sheet.freezeCols ? 0 : frozen.x), this.headerH + (r < sheet.freezeRows ? 0 : frozen.y), c < sheet.freezeCols ? this.headerW + frozen.x : this.width, r < sheet.freezeRows ? this.headerH + frozen.y : this.height];
       if (x + w <= clip[0] || y + h <= clip[1]) continue;
-      const cell = sheet.get(cellR, cellC), style = { ...cell?.style }, value = this.workbook.value(sheet, cellR, cellC); this.visibleCellCount++;
+      const cell = sheet.get(cellR, cellC), style = sheet.style(cellR, cellC), value = this.workbook.value(sheet, cellR, cellC); this.visibleCellCount++;
       for (const rule of sheet.conditionalRules) {
         const q = rule.range; if (r < q.r1 || r > q.r2 || c < q.c1 || c > q.c2) continue;
         if (rule.type === 'positive' && typeof value === 'number') { style.color = value >= 0 ? '#16815c' : '#c14944'; style.bold = true; }

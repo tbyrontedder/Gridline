@@ -13,6 +13,13 @@ body.dark{--surface:#1b2820;--ribbon:#223027;--background:#1b2820;--ink:#dce8df;
 @media(max-width:1000px){.global-search{width:35px;min-width:35px;justify-content:center}.global-search>span:not(:first-child),.global-search kbd{display:none}.autosave{font-size:0}.titlebar .document-title{flex:1}.document-actions>button:first-child{display:none}.ribbon-tabs button{font-size:11px;padding:0 8px}.ribbon-group{padding:0 7px}.side-panel{width:275px}.selection-stats{gap:8px}.statusbar{gap:7px;padding:0 10px}}
 @media print{html,body{overflow:visible;height:auto;background:white}.app,.toast,dialog,.context-menu{display:none!important}#print-area{display:block!important;color:#111;font-family:Arial,sans-serif}#print-area h1{font-size:22px}#print-area table{border-collapse:collapse;width:100%;font-size:9px}#print-area td{border:1px solid #ddd;padding:5px 7px;vertical-align:middle}#print-area .print-meta{font-size:11px;color:#666} @page{size:A4 landscape;margin:12mm}}
 
+/* Number-format controls share the existing native dialog and theme. */
+.format-layout { display:grid; grid-template-columns:150px minmax(0,1fr); gap:24px; min-height:285px; }
+.format-categories { height:245px; }
+.format-categories option { padding:7px 9px; }
+.format-sample { display:block; min-height:48px; padding:14px; margin-bottom:20px; background:var(--surface); border:1px solid var(--line); border-radius:6px; overflow-wrap:anywhere; }
+@media (max-width:520px) { .format-layout { grid-template-columns:115px minmax(0,1fr); gap:12px; } }
+
 </style>
 </head>
 <body>
@@ -487,27 +494,90 @@ function rawValue(raw) {
 }
 const formatters = new Map();
 function numFormat(locale, options, value) { const key = JSON.stringify([locale, options]); if (!formatters.has(key)) formatters.set(key, new Intl.NumberFormat(locale, options)); return formatters.get(key).format(value); }
+const DATE_FORMATS = ['m/d/yyyy', 'mm/dd/yy', 'yyyy-mm-dd', 'mmm d, yyyy', 'dddd, mmmm d, yyyy', 'd-mmm-yy'];
+const TIME_FORMATS = ['h:mm AM/PM', 'h:mm:ss AM/PM', 'hh:mm', 'hh:mm:ss', '[h]:mm:ss'];
+const CURRENCIES = { USD: '$', EUR: '€', GBP: '£', JPY: '¥', CAD: 'CA$', AUD: 'A$' };
+function numberFormatStyle(code = 'general') {
+  const defaults = { decimals:null, pattern:null, currency:'USD', grouping:true };
+  if (code === 'date' || DATE_FORMATS.includes(code)) return { ...defaults, format: 'date', pattern: code === 'date' ? 'mmm d, yyyy' : code };
+  if (code === 'time' || TIME_FORMATS.includes(code)) return { ...defaults, format: 'time', pattern: code === 'time' ? 'hh:mm:ss' : code };
+  if (code === '@') return { ...defaults, format: 'text' };
+  if (/^(general|number|integer|currency|percent|text)$/i.test(code)) return { ...defaults, format: code.toLowerCase() };
+  const match = /^(?:"([^"]+)"|([$€£¥]))?(#,##0|0)(?:\.(0{1,10}))?(%)?$/.exec(code);
+  if (match) return { ...defaults, format: match[5] ? 'percent' : match[1] || match[2] ? 'currency' : 'number', decimals: match[4]?.length ?? 0, grouping: match[3].includes(','), currency: Object.keys(CURRENCIES).find(c => CURRENCIES[c] === (match[1] || match[2])) || 'USD' };
+  return { ...defaults, format: code };
+}
+function numberFormatCode(style = {}) {
+  const s = { ...numberFormatStyle(style.format), ...style }, fmt = s.format || 'general';
+  const d = Math.max(0, Math.min(10, s.decimals ?? (fmt === 'percent' ? 1 : fmt === 'number' ? 2 : 0))), decimal = d ? '.' + '0'.repeat(d) : '';
+  if (fmt === 'date') return s.pattern || 'mmm d, yyyy';
+  if (fmt === 'time') return s.pattern || 'hh:mm:ss';
+  if (fmt === 'text') return '@';
+  if (fmt === 'general') return s.decimals == null ? 'General' : '0' + decimal;
+  if (fmt === 'percent') return (s.grouping === false ? '0' : '#,##0') + decimal + '%';
+  if (fmt === 'number' || fmt === 'integer' || fmt === 'currency') return (fmt === 'currency' ? '"' + (CURRENCIES[s.currency] || '$') + '"' : '') + (s.grouping === false ? '0' : '#,##0') + decimal;
+  return fmt;
+}
 function formatValue(value, style = {}) {
   if (value instanceof FormulaError) return value.code;
   if (value === null || value === undefined) return '';
   if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
   if (typeof value !== 'number') return String(value);
-  const fmt = style.format || 'general', dp = style.decimals;
-  if (fmt === 'date' || /[ymd]/i.test(fmt) && !/[Ee][+-]/.test(fmt) && fmt !== 'number' && fmt !== 'currency') return serialDate(value).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
-  if (fmt === 'percent' || fmt.includes('%')) return numFormat('en-US', { style: 'percent', minimumFractionDigits: dp ?? (fmt === 'percent' ? 1 : (fmt.split('.')[1]?.match(/[0#]/g)?.length ?? 0)), maximumFractionDigits: dp ?? (fmt === 'percent' ? 1 : (fmt.split('.')[1]?.match(/[0#]/g)?.length ?? 0)) }, value);
-  if (fmt === 'currency' || /[$€£]/.test(fmt)) return numFormat('en-US', { style: 'currency', currency: fmt.includes('€') ? 'EUR' : fmt.includes('£') ? 'GBP' : 'USD', minimumFractionDigits: dp ?? 0, maximumFractionDigits: dp ?? 0 }, value);
-  if (fmt === 'number' || fmt === 'integer' || /[0#]/.test(fmt)) { const d = dp ?? (fmt === 'integer' ? 0 : fmt === 'number' ? 2 : (fmt.split('.')[1]?.match(/[0#]/g)?.length ?? 0)); return numFormat('en-US', { useGrouping: true, minimumFractionDigits: d, maximumFractionDigits: d }, value); }
-  if (dp !== undefined) return numFormat('en-US', { useGrouping: false, minimumFractionDigits: dp, maximumFractionDigits: dp }, value);
+  const s = { ...style, ...numberFormatStyle(style.format) }, fmt = s.format || 'general';
+  // Explicit controls override values inferred from imported format codes.
+  for (const key of ['decimals', 'grouping', 'currency', 'pattern']) if (style[key] != null) s[key] = style[key];
+  if (fmt === 'date' || fmt === 'time') {
+    const pattern = s.pattern || (fmt === 'date' ? 'mmm d, yyyy' : 'hh:mm:ss'), date = serialDate(Math.floor(value));
+    if (!Number.isFinite(date.getTime())) return '########';
+    const totalSeconds = Math.round(value * 86400), seconds = (totalSeconds % 86400 + 86400) % 86400, h = Math.floor(seconds / 3600), m = Math.floor(seconds / 60) % 60, sec = seconds % 60;
+    const pad = n => String(n).padStart(2, '0');
+    if (fmt === 'time') return pattern.replace(/\[h\]|AM\/PM|hh|h|mm|ss/g, token => ({ '[h]': Math.floor(totalSeconds / 3600), 'AM/PM': h < 12 ? 'AM' : 'PM', hh: pad(h), h: pattern.includes('AM/PM') ? h % 12 || 12 : h, mm: pad(m), ss: pad(sec) })[token]);
+    const y = date.getUTCFullYear(), month = date.getUTCMonth(), day = Math.floor(value) === 60 ? 29 : date.getUTCDate();
+    const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    return pattern.replace(/yyyy|yy|mmmm|mmm|mm|m|dddd|ddd|dd|d/g, token => ({ yyyy: String(y).padStart(4, '0'), yy: pad(y % 100), mmmm: months[month], mmm: months[month].slice(0,3), mm: pad(month + 1), m: month + 1, dddd: ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][date.getUTCDay()], ddd: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][date.getUTCDay()], dd: pad(day), d: day })[token]);
+  }
+  const dp = Math.max(0, Math.min(10, s.decimals ?? (fmt === 'percent' ? 1 : fmt === 'number' ? 2 : 0)));
+  if (['number','integer','currency','percent'].includes(fmt) || s.decimals != null) {
+    const options = { useGrouping: fmt === 'general' ? false : s.grouping !== false, minimumFractionDigits: dp, maximumFractionDigits: dp };
+    if (fmt === 'percent') options.style = 'percent';
+    if (fmt === 'currency') { options.style = 'currency'; options.currency = CURRENCIES[s.currency] ? s.currency : 'USD'; }
+    return numFormat('en-US', options, value);
+  }
   return Math.abs(value) >= 1e12 || Math.abs(value) < 1e-8 && value !== 0 ? value.toExponential(5) : String(Number(value.toPrecision(12)));
+}
+// Only date/time-formatted inputs are parsed; arbitrary text and formulas stay untouched.
+function formattedInput(raw, style = {}) {
+  raw = String(raw); const fmt = numberFormatStyle(style.format).format;
+  if (fmt === 'text' && raw && !raw.startsWith("'")) return "'" + raw;
+  if (!['date','time'].includes(fmt) || !raw || raw.startsWith('=') || raw.startsWith("'")) return raw;
+  const match = /^(?:(\d{4})-(\d{1,2})-(\d{1,2})|(\d{1,2})\/(\d{1,2})\/(\d{4}))(?:[ T](.+))?$/.exec(raw.trim());
+  let serial = 0, time = raw.trim();
+  if (match) {
+    const y = +(match[1] || match[6]), m = +(match[2] || match[4]), d = +(match[3] || match[5]);
+    const date = new Date(0); date.setUTCFullYear(y, m - 1, d); date.setUTCHours(0,0,0,0);
+    if (y === 1900 && m === 2 && d === 29) serial = 60;
+    else { if (y < 1900 || y > 9999 || date.getUTCFullYear() !== y || date.getUTCMonth() !== m - 1 || date.getUTCDate() !== d) throw new Error('Enter a valid date as yyyy-mm-dd or m/d/yyyy.'); serial = dateSerial(date); }
+    time = match[7] || '';
+  }
+  if (time) {
+    const t = /^(\d{1,6}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?\s*(AM|PM)?$/i.exec(time);
+    if (!t) { if (match) throw new Error('Enter time as hh:mm or hh:mm:ss, optionally with AM/PM.'); return raw; }
+    let h = +t[1]; const m = +t[2], sec = +t[3] || 0;
+    if (m > 59 || sec > 59 || (t[5] ? h < 1 || h > 12 : h > 23 && style.pattern !== '[h]:mm:ss')) throw new Error('Enter a valid time.');
+    if (t[5]) h = h % 12 + (t[5].toUpperCase() === 'PM' ? 12 : 0);
+    serial += (h * 3600 + m * 60 + sec + +(t[4] ? '0.' + t[4] : 0)) / 86400;
+  }
+  return match || time.includes(':') ? String(serial) : raw;
 }
 let nextSheetId = 1;
 class Sheet {
   constructor(name = 'Sheet1', data = null) {
-    this.id = `s${Date.now().toString(36)}${nextSheetId++}`; this.name = name; this.cells = new Map(); this.colWidths = new Map(); this.rowHeights = new Map();
+    this.id = `s${Date.now().toString(36)}${nextSheetId++}`; this.name = name; this.cells = new Map(); this.colWidths = new Map(); this.rowHeights = new Map(); this.colStyles = new Map(); this.rowStyles = new Map();
     this.merges = []; this.conditionalRules = []; this.hiddenRows = new Set(); this.filters = null; this.freezeRows = 0; this.freezeCols = 0; this.charts = []; this.gridlines = true; this.color = '#18835a'; this.revision = 0; this._used = null;
-    if (data) { for (const prop of ['id','name','merges','conditionalRules','filters','freezeRows','freezeCols','charts','gridlines','color','revision','protected','dataRegion']) if (Object.hasOwn(data, prop)) this[prop] = data[prop]; this.cells = new Map(data.cells ?? []); this.colWidths = new Map(data.colWidths ?? []); this.rowHeights = new Map(data.rowHeights ?? []); this.hiddenRows = new Set(data.hiddenRows ?? []); this._used = null; }
+    if (data) { for (const prop of ['id','name','merges','conditionalRules','filters','freezeRows','freezeCols','charts','gridlines','color','revision','protected','dataRegion']) if (Object.hasOwn(data, prop)) this[prop] = data[prop]; this.colStyles = new Map(data.colStyles ?? []); this.rowStyles = new Map(data.rowStyles ?? []); this.cells = new Map(data.cells ?? []); this.colWidths = new Map(data.colWidths ?? []); this.rowHeights = new Map(data.rowHeights ?? []); this.hiddenRows = new Set(data.hiddenRows ?? []); this._used = null; }
   }
   get(r, c) { return this.cells.get(keyOf(r, c)); }
+  style(r, c) { return { ...this.colStyles.get(c), ...this.rowStyles.get(r), ...this.get(r, c)?.style }; }
   raw(r, c) { return this.get(r, c)?.raw ?? ''; }
   usedRange() {
     if (this._used) return this._used;
@@ -516,7 +586,7 @@ class Sheet {
   }
   mergeAt(r, c) { return this.merges.find(q => r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2); }
   toJSON() {
-    const { _used, ...rest } = this; return { ...rest, cells: [...this.cells], colWidths: [...this.colWidths], rowHeights: [...this.rowHeights], hiddenRows: [...this.hiddenRows] };
+    const { _used, ...rest } = this; return { ...rest, cells: [...this.cells], colStyles: [...this.colStyles], rowStyles: [...this.rowStyles], colWidths: [...this.colWidths], rowHeights: [...this.rowHeights], hiddenRows: [...this.hiddenRows] };
   }
 }
 class Workbook {
@@ -533,6 +603,11 @@ class Workbook {
       if (!Array.isArray(d.cells) || d.cells.length > 1000000) throw new Error('Workbook cell limit exceeded.');
       const sheet = new Sheet(String(d.name).slice(0, 31), d); sheet.name = String(d.name).slice(0, 31);
       for (const [k, cell] of sheet.cells) { const [r, c] = k.split(',').map(Number); if (!Number.isInteger(r) || !Number.isInteger(c) || r < 0 || c < 0 || r >= MAX_ROWS || c >= MAX_COLS || typeof cell.raw !== 'string') throw new Error('Invalid cell record.'); }
+      for (const [prop, limit] of [['colStyles', MAX_COLS], ['rowStyles', MAX_ROWS]]) for (const [i, style] of sheet[prop]) if (!Number.isInteger(i) || i < 0 || i >= limit || !style || typeof style !== 'object' || Array.isArray(style)) throw new Error('Invalid row or column style.');
+      for (const records of [sheet.cells, sheet.colStyles, sheet.rowStyles]) for (const record of records.values()) {
+        const decimals = records === sheet.cells ? record.style?.decimals : record.decimals;
+        if (decimals != null && (!Number.isInteger(decimals) || decimals < 0 || decimals > 10)) throw new Error('Invalid decimal places: expected an integer from 0 to 10.');
+      }
       return sheet;
     });
     if (new Set(wb.sheets.map(s => s.id)).size !== wb.sheets.length || new Set(wb.sheets.map(s => s.name.toLowerCase())).size !== wb.sheets.length) throw new Error('Duplicate sheet identities.');
@@ -540,7 +615,7 @@ class Workbook {
   }
   restore(data) { const w = Workbook.fromJSON(data); this.title = w.title; this.sheets = w.sheets; this.activeSheetId = w.activeSheetId; this.names = w.names; this.engine.invalidate(); }
   value(sheet, r, c) { return this.engine.get(sheet, r, c); }
-  display(sheet, r, c) { const cell = sheet.get(r, c); let style = cell?.style ?? {}; if (!style.format && cell?.raw.trim().endsWith('%')) style = { ...style, format: 'percent' }; return formatValue(this.value(sheet, r, c), style); }
+  display(sheet, r, c) { const cell = sheet.get(r, c); let style = sheet.style(r, c); if (!style.format && cell?.raw.trim().endsWith('%')) style = { ...style, format: 'percent' }; return formatValue(this.value(sheet, r, c), style); }
   transaction(label, fn) {
     if (this._transaction) return fn();
     const tx = { label, changes: new Map() }; this._transaction = tx;
@@ -568,9 +643,36 @@ class Workbook {
     sheet.revision++; sheet._used = null;
     this.engine.invalidate([id]);
   }
-  setRaw(sheet, r, c, raw) { this.setCell(sheet, r, c, { raw: String(raw) }); }
-  applyStyle(sheet, q, style) { this.transaction('Format cells', () => { for (const { r, c } of cellsIn(q)) this.setCell(sheet, r, c, { style }); }); }
-  clear(sheet, q, all = false) { this.transaction('Clear cells', () => { for (const [key] of sheet.cells) { const [r, c] = key.split(',').map(Number); if (r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2) this.setCell(sheet, r, c, all ? null : { raw: '' }); } }); }
+  editValue(sheet, r, c) {
+    const raw = sheet.raw(r, c), value = rawValue(raw), style = sheet.style(r, c), fmt = numberFormatStyle(style.format).format;
+    if (raw.startsWith('=') || typeof value !== 'number' || !['date','time'].includes(fmt)) return raw;
+    if (fmt === 'time' && value >= 0 && value < 1) return formatValue(value, { format: 'time', pattern: 'hh:mm:ss' });
+    if (fmt === 'time' && style.pattern === '[h]:mm:ss') return formatValue(value, style);
+    return formatValue(value, { format: 'date', pattern: 'yyyy-mm-dd' }) + (value % 1 ? ' ' + formatValue(value, { format: 'time', pattern: 'hh:mm:ss' }) : '');
+  }
+  setRaw(sheet, r, c, raw) { this.setCell(sheet, r, c, { raw: formattedInput(raw, sheet.style(r, c)) }); }
+  applyStyle(sheet, q, style) {
+    if (Object.hasOwn(style, 'format')) style = { decimals: null, pattern: null, currency: 'USD', grouping: true, ...style, decimals: style.decimals ?? null };
+    const columns = q.r1 === 0 && q.r2 === MAX_ROWS - 1, rows = q.c1 === 0 && q.c2 === MAX_COLS - 1;
+    if (!columns && !rows) return this.transaction('Format cells', () => { for (const { r, c } of cellsIn(q)) this.setCell(sheet, r, c, { style }); });
+    this.mutate('Format cells', () => {
+      const defaults = columns ? sheet.colStyles : sheet.rowStyles;
+      for (let i = columns ? q.c1 : q.r1; i <= (columns ? q.c2 : q.r2); i++) defaults.set(i, { ...defaults.get(i), ...clone(style) });
+      if (columns && rows) for (const [r, current] of sheet.rowStyles) sheet.rowStyles.set(r, { ...current, ...clone(style) });
+      // Touch only stored cells. New cells inherit defaults without allocation.
+      for (const [key, cell] of sheet.cells) { const [r,c] = key.split(',').map(Number); if (r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2) cell.style = { ...cell.style, ...clone(style) }; }
+    });
+  }
+  clear(sheet, q, all = false) {
+    const columns = q.r1 === 0 && q.r2 === MAX_ROWS - 1, rows = q.c1 === 0 && q.c2 === MAX_COLS - 1;
+    if (all && (columns || rows)) return this.mutate('Clear all', () => {
+      if (columns) for (const c of sheet.colStyles.keys()) if (c >= q.c1 && c <= q.c2) sheet.colStyles.delete(c);
+      if (rows) for (const r of sheet.rowStyles.keys()) if (r >= q.r1 && r <= q.r2) sheet.rowStyles.delete(r);
+      for (const [key] of sheet.cells) { const [r,c] = key.split(',').map(Number); if (r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2) sheet.cells.delete(key); }
+    });
+    this.transaction('Clear cells', () => { for (const [key] of sheet.cells) { const [r, c] = key.split(',').map(Number); if (r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2) this.setCell(sheet, r, c, all ? null : { raw: '' }); } });
+  }
+
   mutate(label, fn) {
     const before = clone(this.toJSON());
     try { fn(); } catch (e) { this.restore(before); throw e; }
@@ -605,7 +707,7 @@ class Workbook {
   fill(sheet, source, target) {
     this.transaction('Fill cells', () => {
       const h = source.r2 - source.r1 + 1, w = source.c2 - source.c1 + 1;
-      const originals = new Map(); for (const p of cellsIn(source)) originals.set(keyOf(p.r, p.c), clone(sheet.get(p.r, p.c) ?? { raw: '' }));
+      const originals = new Map(); for (const p of cellsIn(source)) originals.set(keyOf(p.r, p.c), clone({ ...(sheet.get(p.r, p.c) ?? { raw: '' }), style: sheet.style(p.r, p.c) }));
       const verticalSeries = w === 1 && h === 2 && [source.r1, source.r2].every(r => typeof rawValue(sheet.raw(r, source.c1)) === 'number');
       const horizontalSeries = h === 1 && w === 2 && [source.c1, source.c2].every(c => typeof rawValue(sheet.raw(source.r1, c)) === 'number');
       for (const { r, c } of cellsIn(target)) {
@@ -623,8 +725,7 @@ class Workbook {
       const coord = axis === 'row' ? 0 : 1, limit = axis === 'row' ? MAX_ROWS : MAX_COLS, next = new Map();
       for (const [key, cell] of sheet.cells) { const p = key.split(',').map(Number); if (delta < 0 && p[coord] === at) continue; if (p[coord] >= at) p[coord] += delta; if (p[coord] < limit) next.set(keyOf(...p), cell); }
       sheet.cells = next;
-      const sizes = axis === 'row' ? 'rowHeights' : 'colWidths', mapped = new Map();
-      for (const [i, size] of sheet[sizes]) { if (delta < 0 && i === at) continue; const n = i >= at ? i + delta : i; if (n < limit) mapped.set(n, size); } sheet[sizes] = mapped;
+      for (const prop of axis === 'row' ? ['rowHeights','rowStyles'] : ['colWidths','colStyles']) { const mapped = new Map(); for (const [i, value] of sheet[prop]) { if (delta < 0 && i === at) continue; const n = i >= at ? i + delta : i; if (n < limit) mapped.set(n, value); } sheet[prop] = mapped; }
       sheet.hiddenRows.clear(); sheet.filters = null; sheet.dataRegion = null;
       const a = axis === 'row' ? 'r1' : 'c1', b = axis === 'row' ? 'r2' : 'c2';
       sheet.merges = sheet.merges.filter(q => !(delta < 0 && q[a] === at && q[b] === at)).map(q => { const n = { ...q }; if (delta > 0) { if (n[a] >= at) n[a]++; if (n[b] >= at) n[b]++; } else { if (n[a] > at) n[a]--; if (n[b] >= at) n[b]--; } return n; });
@@ -642,7 +743,7 @@ class Workbook {
   }
 }
 
-return { MAX_ROWS, MAX_COLS, MAX_RANGE_CELLS, keyOf, colName, address, parseAddress, normalizedRange, parseRange, rangeAddress, cellsIn, FormulaError, RangeValue, tokenizeFormula, FormulaParser, shiftFormula, dateSerial, serialDate, FUNCTIONS, CalculationEngine, rawValue, formatValue, Sheet, Workbook };
+return { MAX_ROWS, MAX_COLS, MAX_RANGE_CELLS, keyOf, colName, address, parseAddress, normalizedRange, parseRange, rangeAddress, cellsIn, FormulaError, RangeValue, tokenizeFormula, FormulaParser, shiftFormula, dateSerial, serialDate, FUNCTIONS, CalculationEngine, rawValue, DATE_FORMATS, TIME_FORMATS, CURRENCIES, numberFormatStyle, numberFormatCode, formatValue, formattedInput, Sheet, Workbook };
 })();
 
 // ===== renderer.js =====
@@ -859,7 +960,7 @@ class GridRenderer {
       const rect = this.cellRect(cellR, cellC), { x, y, w, h } = rect;
       const clip = [this.headerW + (c < sheet.freezeCols ? 0 : frozen.x), this.headerH + (r < sheet.freezeRows ? 0 : frozen.y), c < sheet.freezeCols ? this.headerW + frozen.x : this.width, r < sheet.freezeRows ? this.headerH + frozen.y : this.height];
       if (x + w <= clip[0] || y + h <= clip[1]) continue;
-      const cell = sheet.get(cellR, cellC), style = { ...cell?.style }, value = this.workbook.value(sheet, cellR, cellC); this.visibleCellCount++;
+      const cell = sheet.get(cellR, cellC), style = sheet.style(cellR, cellC), value = this.workbook.value(sheet, cellR, cellC); this.visibleCellCount++;
       for (const rule of sheet.conditionalRules) {
         const q = rule.range; if (r < q.r1 || r > q.r2 || c < q.c1 || c > q.c2) continue;
         if (rule.type === 'positive' && typeof value === 'number') { style.color = value >= 0 ? '#16815c' : '#c14944'; style.bold = true; }
@@ -1041,7 +1142,7 @@ return { createSampleWorkbook };
 // ===== io.js =====
 __modules["io"] = (() => {
 /** Local-only CSV / Gridline JSON / basic OOXML interoperability. No third-party libraries. */
-const { Workbook, Sheet, keyOf, address, parseAddress, parseRange, shiftFormula, FormulaError, rawValue } = __modules["engine"];
+const { Workbook, Sheet, keyOf, address, parseAddress, parseRange, shiftFormula, FormulaError, rawValue, numberFormatCode, numberFormatStyle } = __modules["engine"];
 function parseDelimited(text, delimiter = null) {
   text = text.replace(/^\uFEFF/, '');
   if (!delimiter) { const first = text.split(/\r?\n/, 1)[0]; delimiter = first.includes('\t') ? '\t' : first.split(';').length > first.split(',').length ? ';' : ','; }
@@ -1140,15 +1241,14 @@ const colorARGB = color => 'FF' + (color || '#000000').replace('#', '').toUpperC
 function styleTable(workbook) {
   const styles = [{}], ids = new Map([['{}', 0]]);
   const idFor = style => { const normalized = Object.fromEntries(Object.entries(style ?? {}).filter(([, v]) => v !== undefined).sort(([a], [b]) => a.localeCompare(b))); const key = JSON.stringify(normalized); if (!ids.has(key)) { ids.set(key, styles.length); styles.push(normalized); } return ids.get(key); };
-  for (const sheet of workbook.sheets) for (const cell of sheet.cells.values()) idFor(cell.style);
+  for (const sheet of workbook.sheets) { for (const style of [...sheet.colStyles.values(), ...sheet.rowStyles.values()]) idFor(style); for (const [key] of sheet.cells) { const [r,c] = key.split(',').map(Number); idFor(sheet.style(r,c)); } }
   const formats = new Map(), fonts = [], fills = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'], xfs = [];
   styles.forEach((s, i) => {
     const size = (s.fontSize ?? 13) * 0.75; fonts.push(`<font>${s.bold ? '<b/>' : ''}${s.italic ? '<i/>' : ''}${s.underline ? '<u/>' : ''}<sz val="${size}"/><color rgb="${colorARGB(s.color || '#293b32')}"/><name val="${escapeXML(s.fontFamily?.split(',')[0] || 'Aptos')}"/></font>`);
     let fillId = 0; if (s.fill) { fillId = fills.length; fills.push(`<fill><patternFill patternType="solid"><fgColor rgb="${colorARGB(s.fill)}"/><bgColor indexed="64"/></patternFill></fill>`); }
-    let fmt = s.format || 'general'; const d = Math.max(0, Math.min(10, s.decimals ?? (fmt === 'percent' ? 1 : fmt === 'number' ? 2 : 0))), decimals = d ? '.' + '0'.repeat(d) : '';
-    fmt = fmt === 'general' ? 'General' : fmt === 'currency' ? '$#,##0' + decimals : fmt === 'percent' ? '0' + decimals + '%' : fmt === 'integer' ? '#,##0' : fmt === 'number' ? '#,##0' + decimals : fmt === 'date' ? 'mmm d, yyyy' : fmt;
+    const fmt = numberFormatCode(s);
     let numFmtId = 0; if (fmt !== 'General') { if (!formats.has(fmt)) formats.set(fmt, 164 + formats.size); numFmtId = formats.get(fmt); }
-    xfs.push(`<xf numFmtId="${numFmtId}" fontId="${i}" fillId="${fillId}" borderId="${s.border ? 1 : 0}" xfId="0" applyFont="1" applyFill="1" applyNumberFormat="1" applyAlignment="1"><alignment vertical="center"${s.align ? ` horizontal="${s.align}"` : ''}${s.wrap ? ' wrapText="1"' : ''}/></xf>`);
+    xfs.push(`<xf numFmtId="${numFmtId}" fontId="${i}" fillId="${fillId}" borderId="${s.border ? 1 : 0}" xfId="0" applyFont="1" applyFill="1" applyNumberFormat="${s.format || s.decimals != null ? 1 : 0}" applyAlignment="1"><alignment vertical="center"${s.align ? ` horizontal="${s.align}"` : ''}${s.wrap ? ' wrapText="1"' : ''}/></xf>`);
   });
   const xml = xmlHeader + `<styleSheet xmlns="${spreadsheetNS}"><numFmts count="${formats.size}">${[...formats].map(([code, id]) => `<numFmt numFmtId="${id}" formatCode="${escapeXML(code)}"/>`).join('')}</numFmts><fonts count="${fonts.length}">${fonts.join('')}</fonts><fills count="${fills.length}">${fills.join('')}</fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border>${['left','right','top','bottom'].map(x => `<${x} style="thin"><color rgb="FFD4DFD8"/></${x}>`).join('')}<diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${xfs.length}">${xfs.join('')}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
   return { xml, idFor };
@@ -1164,7 +1264,7 @@ function exportXLSX(workbook) {
     const rows = new Map();
     for (const [key, cell] of sheet.cells) {
       const [r, c] = key.split(',').map(Number); if (!rows.has(r)) rows.set(r, []);
-      const ref = address(r, c), sid = styles.idFor(cell.style), val = workbook.value(sheet, r, c), formula = cell.raw.startsWith('=') ? `<f>${escapeXML(cell.raw.slice(1))}</f>` : '';
+      const ref = address(r, c), sid = styles.idFor(sheet.style(r, c)), val = workbook.value(sheet, r, c), formula = cell.raw.startsWith('=') ? `<f>${escapeXML(cell.raw.slice(1))}</f>` : '';
       let type = '', content = '';
       if (val instanceof FormulaError) { type = ' t="e"'; content = `<v>${escapeXML(val.code)}</v>`; }
       else if (typeof val === 'number') content = `<v>${val}</v>`;
@@ -1173,10 +1273,10 @@ function exportXLSX(workbook) {
       else if (val !== null && val !== undefined) { type = ' t="inlineStr"'; content = `<is><t xml:space="preserve">${escapeXML(val)}</t></is>`; }
       rows.get(r).push({ c, xml: `<c r="${ref}" s="${sid}"${type}>${formula}${content}</c>` });
     }
-    for (const [r] of sheet.rowHeights) if (!rows.has(r)) rows.set(r, []);
-    const rowXML = [...rows].sort(([a], [b]) => a - b).map(([r, cells]) => `<row r="${r + 1}"${sheet.rowHeights.has(r) ? ` ht="${sheet.rowHeights.get(r) * 0.75}" customHeight="1"` : ''}${sheet.hiddenRows.has(r) ? ' hidden="1"' : ''}>${cells.sort((a, b) => a.c - b.c).map(c => c.xml).join('')}</row>`).join('');
+    for (const r of new Set([...sheet.rowHeights.keys(), ...sheet.rowStyles.keys()])) if (!rows.has(r)) rows.set(r, []);
+    const rowXML = [...rows].sort(([a], [b]) => a - b).map(([r, cells]) => `<row r="${r + 1}"${sheet.rowStyles.has(r) ? ` s="${styles.idFor(sheet.rowStyles.get(r))}" customFormat="1"` : ''}${sheet.rowHeights.has(r) ? ` ht="${sheet.rowHeights.get(r) * 0.75}" customHeight="1"` : ''}${sheet.hiddenRows.has(r) ? ' hidden="1"' : ''}>${cells.sort((a, b) => a.c - b.c).map(c => c.xml).join('')}</row>`).join('');
     const pane = sheet.freezeRows || sheet.freezeCols ? `<pane xSplit="${sheet.freezeCols}" ySplit="${sheet.freezeRows}" topLeftCell="${address(sheet.freezeRows, sheet.freezeCols)}" activePane="${sheet.freezeRows && sheet.freezeCols ? 'bottomRight' : sheet.freezeRows ? 'bottomLeft' : 'topRight'}" state="frozen"/>` : '';
-    files[`xl/worksheets/sheet${i + 1}.xml`] = xmlHeader + `<worksheet xmlns="${spreadsheetNS}"><dimension ref="A1:${address(sheet.usedRange().r2, sheet.usedRange().c2)}"/><sheetViews><sheetView workbookViewId="0" showGridLines="${sheet.gridlines ? 1 : 0}">${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="20.25"/>${sheet.colWidths.size ? '<cols>' + [...sheet.colWidths].map(([c, w]) => `<col min="${c + 1}" max="${c + 1}" width="${Math.max(1, (w - 5) / 7)}" customWidth="1"/>`).join('') + '</cols>' : ''}<sheetData>${rowXML}</sheetData>${sheet.filters ? `<autoFilter ref="${address(sheet.filters.range.r1, sheet.filters.range.c1)}:${address(sheet.filters.range.r2, sheet.filters.range.c2)}"/>` : ''}${sheet.merges.length ? `<mergeCells count="${sheet.merges.length}">${sheet.merges.map(m => `<mergeCell ref="${address(m.r1, m.c1)}:${address(m.r2, m.c2)}"/>`).join('')}</mergeCells>` : ''}<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`;
+    files[`xl/worksheets/sheet${i + 1}.xml`] = xmlHeader + `<worksheet xmlns="${spreadsheetNS}"><dimension ref="A1:${address(sheet.usedRange().r2, sheet.usedRange().c2)}"/><sheetViews><sheetView workbookViewId="0" showGridLines="${sheet.gridlines ? 1 : 0}">${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="20.25"/>${sheet.colWidths.size || sheet.colStyles.size ? '<cols>' + [...new Set([...sheet.colWidths.keys(), ...sheet.colStyles.keys()])].sort((a,b) => a-b).map(c => `<col min="${c + 1}" max="${c + 1}"${sheet.colWidths.has(c) ? ` width="${Math.max(1, (sheet.colWidths.get(c) - 5) / 7)}" customWidth="1"` : ''}${sheet.colStyles.has(c) ? ` style="${styles.idFor(sheet.colStyles.get(c))}"` : ''}/>`).join('') + '</cols>' : ''}<sheetData>${rowXML}</sheetData>${sheet.filters ? `<autoFilter ref="${address(sheet.filters.range.r1, sheet.filters.range.c1)}:${address(sheet.filters.range.r2, sheet.filters.range.c2)}"/>` : ''}${sheet.merges.length ? `<mergeCells count="${sheet.merges.length}">${sheet.merges.map(m => `<mergeCell ref="${address(m.r1, m.c1)}:${address(m.r2, m.c2)}"/>`).join('')}</mergeCells>` : ''}<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`;
   });
   return zipStore(files);
 }
@@ -1187,7 +1287,7 @@ function readXML(bytes) {
 }
 const elements = (node, name) => [...node.getElementsByTagNameNS('*', name)];
 const firstElement = (node, name) => elements(node, name)[0];
-const builtinFormats = { 0: 'general', 1: 'integer', 2: 'number', 3: 'integer', 4: 'number', 9: '0%', 10: '0.00%', 14: 'date', 15: 'date', 16: 'date', 17: 'date', 22: 'date', 44: 'currency' };
+const builtinFormats = { 0: 'general', 1: 'integer', 2: 'number', 3: 'integer', 4: 'number', 9: '0%', 10: '0.00%', 14: 'm/d/yyyy', 15: 'd-mmm-yy', 16: 'date', 17: 'date', 18: 'h:mm AM/PM', 19: 'h:mm:ss AM/PM', 20: 'hh:mm', 21: 'hh:mm:ss', 22: 'date', 46: '[h]:mm:ss', 49: '@', 44: 'currency' };
 async function importXLSX(buffer, title = 'Imported workbook') {
   const parts = await unzip(buffer), workbookDoc = readXML(parts.get('xl/workbook.xml')), relsDoc = readXML(parts.get('xl/_rels/workbook.xml.rels'));
   const dateSystem = firstElement(workbookDoc, 'workbookPr')?.getAttribute('date1904');
@@ -1205,8 +1305,8 @@ async function importXLSX(buffer, title = 'Imported workbook') {
     const cssColor = el => { const rgb = el?.getAttribute('rgb'); return rgb ? '#' + rgb.slice(-6) : undefined; };
     styles = xfs.map(xf => {
       const font = fonts[+xf.getAttribute('fontId')], fill = fills[+xf.getAttribute('fillId')], alignment = firstElement(xf, 'alignment'), id = +xf.getAttribute('numFmtId');
-      const style = { format: formats.get(id) || builtinFormats[id] || 'general' };
-      if (font) { style.bold = !!firstElement(font, 'b'); style.italic = !!firstElement(font, 'i'); style.underline = !!firstElement(font, 'u'); const fs = firstElement(font, 'sz')?.getAttribute('val'); if (fs) style.fontSize = Math.min(72, +fs / 0.75); const color = cssColor(firstElement(font, 'color')); if (color) style.color = color; }
+      const style = xf.getAttribute('applyNumberFormat') === '0' && id === 0 ? {} : numberFormatStyle(formats.get(id) || builtinFormats[id] || 'general');
+      if (font) { const family = firstElement(font, 'name')?.getAttribute('val'); if (family) style.fontFamily = family; style.bold = !!firstElement(font, 'b'); style.italic = !!firstElement(font, 'i'); style.underline = !!firstElement(font, 'u'); const fs = firstElement(font, 'sz')?.getAttribute('val'); if (fs) style.fontSize = Math.min(72, +fs / 0.75); const color = cssColor(firstElement(font, 'color')); if (color) style.color = color; }
       const color = fill ? cssColor(firstElement(fill, 'fgColor')) : null; if (color && firstElement(fill, 'patternFill')?.getAttribute('patternType') === 'solid') style.fill = color;
       if (alignment) { const a = alignment.getAttribute('horizontal'); if (['left', 'center', 'right'].includes(a)) style.align = a; style.wrap = alignment.getAttribute('wrapText') === '1'; }
       if (+xf.getAttribute('borderId') > 0) style.border = true;
@@ -1232,10 +1332,10 @@ async function importXLSX(buffer, title = 'Imported workbook') {
       else if (type === 'inlineStr') raw = "'" + elements(firstElement(cell, 'is') || cell, 't').map(t => t.textContent).join('');
       else if (type === 'str') raw = "'" + v;
       else if (type === 'b') raw = v === '1' ? 'TRUE' : 'FALSE';
-      sheet.cells.set(keyOf(ref.r, ref.c), { raw, style: structuredClone(styles[+cell.getAttribute('s')] || {}) });
+      sheet.cells.set(keyOf(ref.r, ref.c), { raw, ...(cell.hasAttribute('s') ? { style: structuredClone(styles[+cell.getAttribute('s')] || {}) } : {}) });
     }
-    for (const row of elements(doc, 'row')) { const r = +row.getAttribute('r') - 1; if (row.hasAttribute('ht')) sheet.rowHeights.set(r, Math.max(16, Math.min(400, +row.getAttribute('ht') / 0.75))); if (row.getAttribute('hidden') === '1') sheet.hiddenRows.add(r); }
-    for (const col of elements(doc, 'col')) { const min = +col.getAttribute('min') - 1, max = Math.min(16383, +col.getAttribute('max') - 1), width = +col.getAttribute('width') * 7 + 5; for (let c = Math.max(0, min); c <= max; c++) if (width) sheet.colWidths.set(c, Math.max(26, Math.min(1200, width))); }
+    for (const row of elements(doc, 'row')) { const r = +row.getAttribute('r') - 1; if (r < 0 || r >= 1048576) continue; if (row.hasAttribute('s')) sheet.rowStyles.set(r, structuredClone(styles[+row.getAttribute('s')] || {})); if (row.hasAttribute('ht')) sheet.rowHeights.set(r, Math.max(16, Math.min(400, +row.getAttribute('ht') / 0.75))); if (row.getAttribute('hidden') === '1') sheet.hiddenRows.add(r); }
+    for (const col of elements(doc, 'col')) { const min = +col.getAttribute('min') - 1, max = Math.min(16383, +col.getAttribute('max') - 1), width = +col.getAttribute('width') * 7 + 5; for (let c = Math.max(0, min); c <= max; c++) { if (col.hasAttribute('width')) sheet.colWidths.set(c, Math.max(26, Math.min(1200, width))); if (col.hasAttribute('style')) sheet.colStyles.set(c, structuredClone(styles[+col.getAttribute('style')] || {})); } }
     for (const cell of elements(doc, 'mergeCell')) { const q = parseRange(cell.getAttribute('ref')); if (q) sheet.merges.push(q); }
     const pane = firstElement(doc, 'pane'); if (pane?.getAttribute('state') === 'frozen') { sheet.freezeRows = Math.min(1000, +pane.getAttribute('ySplit') || 0); sheet.freezeCols = Math.min(100, +pane.getAttribute('xSplit') || 0); }
     const view = firstElement(doc, 'sheetView'); sheet.gridlines = view?.getAttribute('showGridLines') !== '0';
@@ -1253,7 +1353,7 @@ return { parseDelimited, serializeDelimited, exportCSV, workbookFromCSV, downloa
 
 // ===== app.js =====
 __modules["app"] = (() => {
-const { Workbook, MAX_ROWS, MAX_COLS, MAX_RANGE_CELLS, FUNCTIONS, FormulaError, address, parseAddress, parseRange, normalizedRange, rangeAddress, cellsIn, keyOf, shiftFormula, formatValue, colName } = __modules["engine"];
+const { Workbook, MAX_ROWS, MAX_COLS, MAX_RANGE_CELLS, FUNCTIONS, FormulaError, address, parseAddress, parseRange, normalizedRange, rangeAddress, cellsIn, keyOf, shiftFormula, formatValue, colName, DATE_FORMATS, TIME_FORMATS, CURRENCIES, numberFormatStyle } = __modules["engine"];
 const { GridRenderer } = __modules["renderer"];
 const { createSampleWorkbook } = __modules["sample"];
 const { parseDelimited, serializeDelimited, exportCSV, workbookFromCSV, downloadFile, exportXLSX, importXLSX } = __modules["io"];
@@ -1289,7 +1389,7 @@ const group = (label, content, extra = '') => `<div class="ribbon-group ${extra}
 const STORAGE_KEY = 'gridline.workbook.v1';
 const COMMANDS = [
   ['new','New workbook','file','Ctrl/⌘ N'],['open','Open workbook','open','Ctrl/⌘ O'],['save','Save Gridline workbook','save','Ctrl/⌘ S'],['export-xlsx','Export Excel workbook (.xlsx)','export',''],['export-csv','Export current sheet as CSV','export',''],
-  ['find','Find and replace','search','Ctrl/⌘ F'],['chart','Insert chart','chart',''],['functions','Insert function','function',''],['name-manager','Named ranges','name',''],['sort','Sort range','sort',''],['filter','Filter values','filter',''],['conditional','Conditional formatting','conditional',''],['format-table','Format as table','table',''],['freeze-top','Freeze top row','freeze',''],['freeze-first','Freeze first column','freeze',''],['freeze','Freeze at active cell','freeze',''],['unfreeze','Unfreeze panes','freeze',''],['toggle-gridlines','Toggle gridlines','grid',''],['show-formulas','Show formulas','function','Ctrl/⌘ `'],['add-note','Add a cell note','comment',''],['notes','View notes','comment',''],['insert-row','Insert row','insert',''],['insert-column','Insert column','insert',''],['delete-row','Delete row','delete',''],['delete-column','Delete column','delete',''],['add-sheet','Add worksheet','plus',''],['duplicate-sheet','Duplicate worksheet','copy',''],['theme','Toggle dark mode','moon',''],['recalculate','Recalculate workbook','refresh',''],['performance','Renderer diagnostics','grid',''],['print','Print worksheet','print','Ctrl/⌘ P'],['help','Keyboard shortcuts','info','F1']
+  ['format-cells','Format cells…','table','Ctrl/⌘ 1'],['find','Find and replace','search','Ctrl/⌘ F'],['chart','Insert chart','chart',''],['functions','Insert function','function',''],['name-manager','Named ranges','name',''],['sort','Sort range','sort',''],['filter','Filter values','filter',''],['conditional','Conditional formatting','conditional',''],['format-table','Format as table','table',''],['freeze-top','Freeze top row','freeze',''],['freeze-first','Freeze first column','freeze',''],['freeze','Freeze at active cell','freeze',''],['unfreeze','Unfreeze panes','freeze',''],['toggle-gridlines','Toggle gridlines','grid',''],['show-formulas','Show formulas','function','Ctrl/⌘ `'],['add-note','Add a cell note','comment',''],['notes','View notes','comment',''],['insert-row','Insert row','insert',''],['insert-column','Insert column','insert',''],['delete-row','Delete row','delete',''],['delete-column','Delete column','delete',''],['add-sheet','Add worksheet','plus',''],['duplicate-sheet','Duplicate worksheet','copy',''],['theme','Toggle dark mode','moon',''],['recalculate','Recalculate workbook','refresh',''],['performance','Renderer diagnostics','grid',''],['print','Print worksheet','print','Ctrl/⌘ P'],['help','Keyboard shortcuts','info','F1']
 ];
 class GridlineApp {
   constructor() {
@@ -1322,9 +1422,9 @@ class GridlineApp {
   updateUI() {
     $('#workbook-title').value = this.workbook.title; document.title = `${this.workbook.title} — Gridline`;
     $('#name-box').value = rangeAddress(this.selection);
-    if (!this.editing && !this.barEditing) this.formulaInput.value = this.sheet.raw(this.active.r, this.active.c);
+    if (!this.editing && !this.barEditing) this.formulaInput.value = this.workbook.editValue(this.sheet, this.active.r, this.active.c);
     this.renderer.selection = this.selection; this.renderer.active = this.active;
-    const style = this.sheet.get(this.active.r, this.active.c)?.style || {};
+    const style = this.sheet.style(this.active.r, this.active.c);
     for (const prop of ['bold', 'italic', 'underline', 'wrap']) $$(`[data-action="${prop}"]`).forEach(b => b.classList.toggle('active', !!style[prop]));
     for (const align of ['left', 'center', 'right']) $$(`[data-action="align-${align}"]`).forEach(b => b.classList.toggle('active', style.align === align));
     const format = $('#number-format'); if (format) format.value = ['general','number','currency','percent','date','integer'].includes(style.format) ? style.format : 'general';
@@ -1359,22 +1459,32 @@ class GridlineApp {
     });
     document.addEventListener('pointerdown', e => {
       if (!e.target.closest('#context-menu')) $('#context-menu').hidden = true;
-      if (this.editing && !e.target.closest('#grid-host') && !e.target.closest('#formula-input') && !e.target.closest('.formula-control')) this.commitEdit(false);
+      if (this.editing && !e.target.closest('#grid-host') && !e.target.closest('#formula-input') && !e.target.closest('.formula-control')) this.errorBoundary(() => this.commitEdit(false));
       if (e.target.closest('.ribbon button,.formula-control,.fx') && !e.target.closest('select,input')) e.preventDefault();
     });
-    document.addEventListener('keydown', e => this.onKey(e));
-    this.host.addEventListener('pointerdown', e => this.onPointerDown(e));
+    document.addEventListener('keydown', e => this.errorBoundary(() => this.onKey(e)));
+    this.host.addEventListener('pointerdown', e => this.errorBoundary(() => this.onPointerDown(e)));
     this.host.addEventListener('pointermove', e => this.onPointerMove(e));
     this.host.addEventListener('pointerup', e => this.onPointerUp(e));
     this.host.addEventListener('pointercancel', e => this.onPointerUp(e));
     this.host.addEventListener('dblclick', e => { if (e.target.closest('.chart-card,.scroll-thumb,.cell-editor')) return; const p = this.localPoint(e), hit = this.renderer.hitTest(p.x, p.y); if (hit.colHeader) this.autoFit(hit.c); else if (!hit.rowHeader) this.startEdit(); });
-    this.host.addEventListener('contextmenu', e => { if (e.target.closest('.cell-editor')) return; e.preventDefault(); const p = this.localPoint(e), hit = this.renderer.hitTest(p.x, p.y); if (hit.r < this.selection.r1 || hit.r > this.selection.r2 || hit.c < this.selection.c1 || hit.c > this.selection.c2) this.goto(hit.r, hit.c); this.cellContextMenu(e.clientX, e.clientY); });
-    this.host.addEventListener('wheel', e => { e.preventDefault(); if (this.editing) this.commitEdit(false); if (e.ctrlKey || e.metaKey) this.setZoom(this.renderer.zoom + (e.deltaY > 0 ? -.1 : .1)); else { const unit = e.deltaMode === 1 ? 25 : e.deltaMode === 2 ? this.renderer.height : 1; this.renderer.scrollY += e.shiftKey ? 0 : e.deltaY * unit; this.renderer.scrollX += e.shiftKey ? e.deltaY * unit : e.deltaX * unit; this.renderer.clampScroll(); this.renderer.requestFrame(); } }, { passive: false });
+    this.host.addEventListener('contextmenu', e => {
+      if (e.target.closest('.cell-editor')) return; e.preventDefault(); this.errorBoundary(() => {
+        this.commitEdit(false); this.commitFormula();
+        const p = this.localPoint(e), hit = this.renderer.hitTest(p.x, p.y), q = this.selection;
+        if (hit.colHeader || hit.rowHeader) {
+          const selected = hit.colHeader && !hit.rowHeader ? q.r1 === 0 && q.r2 === MAX_ROWS - 1 && hit.c >= q.c1 && hit.c <= q.c2 : hit.rowHeader && !hit.colHeader && q.c1 === 0 && q.c2 === MAX_COLS - 1 && hit.r >= q.r1 && hit.r <= q.r2;
+          if (!selected) this.select({ r1: hit.colHeader ? 0 : hit.r, r2: hit.colHeader ? MAX_ROWS - 1 : hit.r, c1: hit.rowHeader ? 0 : hit.c, c2: hit.rowHeader ? MAX_COLS - 1 : hit.c }, { r: hit.colHeader ? 0 : hit.r, c: hit.rowHeader ? 0 : hit.c });
+        } else if (hit.r < q.r1 || hit.r > q.r2 || hit.c < q.c1 || hit.c > q.c2) this.goto(hit.r, hit.c);
+        this.cellContextMenu(e.clientX, e.clientY);
+      });
+    });
+    this.host.addEventListener('wheel', e => this.errorBoundary(() => { e.preventDefault(); if (this.editing) this.commitEdit(false); if (e.ctrlKey || e.metaKey) this.setZoom(this.renderer.zoom + (e.deltaY > 0 ? -.1 : .1)); else { const unit = e.deltaMode === 1 ? 25 : e.deltaMode === 2 ? this.renderer.height : 1; this.renderer.scrollY += e.shiftKey ? 0 : e.deltaY * unit; this.renderer.scrollX += e.shiftKey ? e.deltaY * unit : e.deltaX * unit; this.renderer.clampScroll(); this.renderer.requestFrame(); } }), { passive: false });
     this.editor.addEventListener('compositionstart', () => this.composing = true); this.editor.addEventListener('compositionend', () => this.composing = false);
     this.editor.addEventListener('input', () => { this.formulaInput.value = this.editor.value; this.showFormulaSuggestions(this.editor); });
     this.formulaInput.addEventListener('focus', () => { if (this.editing) { this.formulaInput.value = this.editor.value; this.editing = false; this.editor.hidden = true; } this.barEditing = true; $('#mode-status').textContent = 'Edit'; });
     this.formulaInput.addEventListener('input', () => this.showFormulaSuggestions(this.formulaInput));
-    this.formulaInput.addEventListener('blur', () => { setTimeout(() => { if (this.barEditing && document.activeElement !== this.formulaInput && !this.drag?.reference) this.commitFormula(); }, 0); });
+    this.formulaInput.addEventListener('blur', () => { setTimeout(() => { if (this.barEditing && document.activeElement !== this.formulaInput && !this.drag?.reference) this.errorBoundary(() => this.commitFormula()); }, 0); });
     $('#name-box').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); const value = e.target.value.trim(), named = this.workbook.names[value.toUpperCase()]; let q = parseRange(value); if (!q && named) { const parts = named.split('!'); const name = parts[0].replace(/^'|'$/g, '').replaceAll("''", "'"); const sheet = this.workbook.sheetByName(name); if (sheet) { this.switchSheet(sheet.id); q = parseRange(parts[1]); } } if (q) { this.anchor = { r: q.r1, c: q.c1 }; this.select(q, this.anchor, true); this.host.focus(); } else this.toast('Enter a cell or range, for example A1, B2:F20, or a defined name.', true); } });
     $('#workbook-title').addEventListener('change', e => this.workbook.mutate('Rename workbook', () => this.workbook.title = e.target.value.trim().slice(0, 200) || 'Untitled workbook'));
     $('#zoom-slider').addEventListener('input', e => this.setZoom(+e.target.value / 100));
@@ -1473,8 +1583,8 @@ class GridlineApp {
   }
   startEdit(initial) {
     if (!this.editable()) return;
-    this.editing = true; this.barEditing = false; this.editor.hidden = false; this.editor.value = initial === undefined ? this.sheet.raw(this.active.r, this.active.c) : initial; this.formulaInput.value = this.editor.value;
-    const style = this.sheet.get(this.active.r, this.active.c)?.style || {}; this.editor.style.fontFamily = style.fontFamily || 'Aptos, "Segoe UI", Arial, sans-serif'; this.editor.style.fontSize = (style.fontSize || 13) * this.renderer.zoom + 'px'; this.editor.style.fontWeight = style.bold ? '600' : '400';
+    this.editing = true; this.barEditing = false; this.editor.hidden = false; this.editor.value = initial === undefined ? this.workbook.editValue(this.sheet, this.active.r, this.active.c) : initial; this.formulaInput.value = this.editor.value;
+    const style = this.sheet.style(this.active.r, this.active.c); this.editor.style.fontFamily = style.fontFamily || 'Aptos, "Segoe UI", Arial, sans-serif'; this.editor.style.fontSize = (style.fontSize || 13) * this.renderer.zoom + 'px'; this.editor.style.fontWeight = style.bold ? '600' : '400';
     this.positionEditor(); this.editor.focus(); this.editor.setSelectionRange(this.editor.value.length, this.editor.value.length); $('#mode-status').textContent = 'Edit';
   }
   positionEditor() {
@@ -1482,13 +1592,15 @@ class GridlineApp {
     this.editor.style.left = rect.x + 'px'; this.editor.style.top = rect.y + 'px'; this.editor.style.width = Math.min(Math.max(rect.w + 1, 150), this.renderer.width - rect.x - 12) + 'px'; this.editor.style.height = Math.max(rect.h + 1, 29) + 'px';
   }
   commitEdit(move = false) {
-    if (!this.editing) return; const raw = this.editor.value; this.editing = false; this.editor.hidden = true; $('#formula-suggestions').hidden = true;
-    if (raw !== this.sheet.raw(this.active.r, this.active.c)) this.workbook.setRaw(this.sheet, this.active.r, this.active.c, raw);
+    if (!this.editing) return; const raw = this.editor.value;
+    if (raw !== this.workbook.editValue(this.sheet, this.active.r, this.active.c)) this.workbook.setRaw(this.sheet, this.active.r, this.active.c, raw);
+    this.editing = false; this.editor.hidden = true; $('#formula-suggestions').hidden = true;
     this.updateUI(); if (move) this.goto(this.active.r + 1, this.active.c);
   }
   commitFormula() {
-    if (!this.barEditing) return; this.barEditing = false; $('#formula-suggestions').hidden = true;
-    if (this.editable() && this.formulaInput.value !== this.sheet.raw(this.active.r, this.active.c)) this.workbook.setRaw(this.sheet, this.active.r, this.active.c, this.formulaInput.value); this.updateUI();
+    if (!this.barEditing) return;
+    if (this.editable() && this.formulaInput.value !== this.workbook.editValue(this.sheet, this.active.r, this.active.c)) this.workbook.setRaw(this.sheet, this.active.r, this.active.c, this.formulaInput.value);
+    this.barEditing = false; $('#formula-suggestions').hidden = true; this.updateUI();
   }
   cancelEdit() { this.editing = this.barEditing = false; this.editor.hidden = true; $('#formula-suggestions').hidden = true; this.updateUI(); this.host.focus(); }
   showFormulaSuggestions(input) {
@@ -1512,6 +1624,7 @@ class GridlineApp {
       return;
     }
     if (this.isInputFocus()) return;
+    if (mod && key === '1') { e.preventDefault(); this.errorBoundary(() => this.run('format-cells')); return; }
     if (mod && ['z','y','f','h','b','i','u','a','d','r','`','n'].includes(key)) {
       e.preventDefault();
       const command = { z:e.shiftKey ? 'redo' : 'undo', y:'redo', f:'find', h:'find', b:'bold', i:'italic', u:'underline', a:'select-all', d:'fill-down', r:'fill-right', '`':'show-formulas', n:'new' }[key]; this.errorBoundary(() => this.run(command)); return;
@@ -1549,7 +1662,7 @@ class GridlineApp {
       html += group('Clipboard', tool('paste','Paste','paste',true,true) + stack(tool('cut','Cut','cut'),tool('copy','Copy','copy')) + stack(tool('format-painter','Format painter','paint')));
       html += group('Font', `<div class="font-tools"><div class="ribbon-row"><select id="font-family" class="font-select" aria-label="Font family"><option>Aptos</option><option>Arial</option><option>Georgia</option><option>Verdana</option><option>Courier New</option></select><select id="font-size" class="font-size" aria-label="Font size">${[8,9,10,11,12,14,16,18,20,24,28,32,36,48].map(s => `<option${s === 10 ? ' selected' : ''}>${s}</option>`).join('')}</select>${mini('font-larger','plus','Increase font size','A⁺')}${mini('font-smaller','plus','Decrease font size','A⁻')}</div><div class="ribbon-row">${mini('bold','','Bold (Ctrl/⌘ B)','<span class="text-bold">B</span>')}${mini('italic','','Italic (Ctrl/⌘ I)','<span class="text-italic">I</span>')}${mini('underline','','Underline (Ctrl/⌘ U)','<span class="text-underline">U</span>')}<span class="ribbon-sep"></span>${mini('borders','border','Toggle cell borders')}<span class="ribbon-sep"></span><button class="mini-tool fill-color-tool" data-action="fill-color" title="Fill color" aria-label="Fill color">${icon('fill')}</button><button class="mini-tool font-color-tool" data-action="text-color" title="Font color" aria-label="Font color">A</button></div></div>`);
       html += group('Alignment', `<div class="font-tools"><div class="ribbon-row">${mini('align-left','alignLeft','Align left')}${mini('align-center','alignCenter','Center')}${mini('align-right','alignRight','Align right')}${tool('wrap','Wrap text','wrap')}</div><div class="ribbon-row">${tool('merge','Merge & center','merge')}</div></div>`);
-      html += group('Number', `<div class="font-tools"><div class="ribbon-row"><select id="number-format" class="number-format" aria-label="Number format"><option value="general">General</option><option value="number">Number</option><option value="currency">Currency</option><option value="percent">Percentage</option><option value="date">Short date</option><option value="integer">Integer</option></select></div><div class="ribbon-row">${mini('currency','','Currency','$')}${mini('percent','percent','Percentage')}${mini('number','','Number with separator',',')}<span class="ribbon-sep"></span>${mini('decimal-less','','Decrease decimals','.0←')}${mini('decimal-more','','Increase decimals','→.00')}</div></div>`);
+      html += group('Number', `<div class="font-tools"><div class="ribbon-row"><select id="number-format" class="number-format" aria-label="Number format"><option value="general">General</option><option value="number">Number</option><option value="currency">Currency</option><option value="percent">Percentage</option><option value="date">Short date</option><option value="integer">Integer</option></select></div><div class="ribbon-row">${mini('currency','','Currency','$')}${mini('percent','percent','Percentage')}${mini('number','','Number with separator',',')}<span class="ribbon-sep"></span>${mini('decimal-less','','Decrease decimals','.0←')}${mini('decimal-more','','Increase decimals','→.00')}${mini('format-cells','table','Format cells (Ctrl/⌘ 1)')}</div></div>`);
       html += group('Styles', tool('conditional','Conditional<br>formatting','conditional',true,true) + tool('format-table','Format as<br>table','table',true,true) + `<div class="style-gallery"><button class="style-chip" data-action="style-normal">Normal</button><button class="style-chip good" data-action="style-good">Good</button><button class="style-chip heading" data-action="style-heading">Heading</button><button class="style-chip warning" data-action="style-warning">Warning</button></div>`, 'styles-group');
       html += group('Cells', tool('insert-menu','Insert','insert',true,true) + tool('delete-menu','Delete','delete',true,true));
       html += group('Editing', stack(tool('autosum','AutoSum','sum'),tool('clear-menu','Clear','clear')) + tool('sort-filter','Sort &<br>filter','sort',true,true) + tool('find','Find &<br>select','search',true,true));
@@ -1581,9 +1694,35 @@ class GridlineApp {
   }
   setZoom(zoom) { this.renderer.setZoom(Math.round(zoom * 10) / 10); $('#zoom-value').textContent = Math.round(this.renderer.zoom * 100) + '%'; $('#zoom-slider').value = this.renderer.zoom * 100; this.positionCharts(); }
   format(style) { if (this.editable()) this.workbook.applyStyle(this.sheet, this.selection, style); }
+  showFormatCells() {
+    if (!this.editable()) return;
+    const q = { ...this.selection }, sheet = this.sheet, current = sheet.style(this.active.r, this.active.c);
+    const initial = { ...current, ...numberFormatStyle(current.format), ...Object.fromEntries(Object.entries(current).filter(([k,v]) => k !== 'format' && v != null)) }, categories = { general:'General', number:'Number', currency:'Currency', date:'Date', time:'Time', percent:'Percentage', text:'Text' };
+    const scope = q.r1 === 0 && q.r2 === MAX_ROWS - 1 ? `Columns ${colName(q.c1)}:${colName(q.c2)}` : q.c1 === 0 && q.c2 === MAX_COLS - 1 ? `Rows ${q.r1 + 1}:${q.r2 + 1}` : rangeAddress(q);
+    this.openDialog('Format Cells', `<p class="help-text">${escapeHTML(scope)} · Number format</p><div class="format-layout"><div><label class="field-label" for="format-category">Category</label><select id="format-category" class="dialog-input format-categories" size="7">${Object.entries(categories).map(([v,label]) => `<option value="${v}">${label}</option>`).join('')}</select></div><div><label class="field-label" for="format-sample">Sample</label><output id="format-sample" class="format-sample"></output><div id="format-options"></div><p id="format-description" class="help-text"></p></div></div><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Cancel</button><button id="format-apply" class="primary-btn">OK</button></div>`, 620);
+    const category = $('#format-category'); category.value = initial.format === 'integer' ? 'number' : categories[initial.format] ? initial.format : 'general';
+    const read = () => ({ format: category.value, decimals: $('#format-decimals') ? +$('#format-decimals').value : null, currency: $('#format-currency')?.value || 'USD', grouping: $('#format-grouping')?.checked ?? true, pattern: $('#format-pattern')?.value || null });
+    const preview = () => {
+      const style = read(), value = this.workbook.value(sheet, this.active.r, this.active.c);
+      $('#format-sample').textContent = formatValue(value ?? (['date','time'].includes(style.format) ? 45292.5 : 1234.567), style);
+    };
+    const options = (useCurrent = false) => {
+      const fmt = category.value, patterns = fmt === 'date' ? DATE_FORMATS : TIME_FORMATS;
+      $('#format-options').innerHTML = ['number','currency','percent'].includes(fmt) ? `<label class="field-label" for="format-decimals">Decimal places</label><input id="format-decimals" class="dialog-input" type="number" min="0" max="10" step="1" required value="2">${fmt === 'currency' ? `<label class="field-label" for="format-currency">Currency symbol</label><select id="format-currency" class="dialog-input">${Object.entries(CURRENCIES).map(([code,symbol]) => `<option value="${code}">${symbol} — ${code}</option>`).join('')}</select>` : ''}${fmt !== 'percent' ? '<p><label><input id="format-grouping" type="checkbox" checked> Use thousands separator</label></p>' : ''}` : ['date','time'].includes(fmt) ? `<label class="field-label" for="format-pattern">Type</label><select id="format-pattern" class="dialog-input" size="${patterns.length}">${patterns.map(pattern => `<option value="${pattern}">${formatValue(45292.5625,{format:fmt,pattern})}</option>`).join('')}</select>` : '';
+      if ($('#format-decimals')) $('#format-decimals').value = useCurrent && Number.isInteger(initial.decimals) && initial.decimals >= 0 && initial.decimals <= 10 ? initial.decimals : useCurrent ? (initial.format === 'number' ? 2 : initial.format === 'percent' ? 1 : 0) : 2;
+      if (useCurrent) { if ($('#format-currency')) $('#format-currency').value = initial.currency || 'USD'; if ($('#format-grouping')) $('#format-grouping').checked = initial.grouping !== false; }
+      if ($('#format-pattern')) $('#format-pattern').value = useCurrent && patterns.includes(initial.pattern) ? initial.pattern : patterns[0];
+      $('#format-description').textContent = { general:'General displays values without a specific number format.', number:'Change how numbers appear without changing their values.', currency:'Display amounts with the selected currency symbol.', percent:'Display values multiplied by 100 with a percent sign.', date:'Enter dates as yyyy-mm-dd or m/d/yyyy (four-digit year). Dates remain numeric values for calculations.', time:'Enter times as hh:mm or hh:mm:ss, optionally with AM/PM.', text:'New entries are kept as text, including leading zeros. Existing values and formulas are unchanged.' }[fmt];
+      preview();
+    };
+    category.onchange = () => options();
+    $('#format-options').oninput = () => { if (!$('#format-decimals') || $('#format-decimals').validity.valid) preview(); };
+    $('#format-apply').onclick = () => this.errorBoundary(() => { const decimals = $('#format-decimals'); if (decimals && !decimals.reportValidity()) return; this.workbook.applyStyle(sheet, q, read()); this.closeDialog(); });
+    options(true);
+  }
   autoFit(column = null) {
     if (!this.editable()) return; const cols = column === null ? [this.selection.c1, Math.min(this.selection.c2, this.selection.c1 + 199)] : [column, column], sizes = new Map();
-    for (let c = cols[0]; c <= cols[1]; c++) { let width = 54; for (const [key, cell] of this.sheet.cells) { const [r, cc] = key.split(',').map(Number); if (cc !== c || this.sheet.mergeAt(r, c)) continue; const text = this.workbook.display(this.sheet, r, c); const font = this.renderer.font(cell.style); width = Math.max(width, this.renderer.measureText(text, font) / this.renderer.zoom + 23); } sizes.set(c, Math.min(500, Math.ceil(width))); }
+    for (let c = cols[0]; c <= cols[1]; c++) { let width = 54; for (const [key, cell] of this.sheet.cells) { const [r, cc] = key.split(',').map(Number); if (cc !== c || this.sheet.mergeAt(r, c)) continue; const text = this.workbook.display(this.sheet, r, c); const font = this.renderer.font(this.sheet.style(r,c)); width = Math.max(width, this.renderer.measureText(text, font) / this.renderer.zoom + 23); } sizes.set(c, Math.min(500, Math.ceil(width))); }
     this.workbook.mutate('Auto-fit columns', () => { for (const [c, width] of sizes) this.sheet.colWidths.set(c, width); });
   }
   dataRange() {
@@ -1601,7 +1740,7 @@ class GridlineApp {
   }
   async run(action, element = null) {
     if (!['cancel-edit','commit-edit','close-dialog'].includes(action)) { this.commitEdit(false); this.commitFormula(); }
-    const style = this.sheet.get(this.active.r, this.active.c)?.style || {};
+    const style = this.sheet.style(this.active.r, this.active.c);
     if (['bold','italic','underline','wrap'].includes(action)) return this.format({ [action]: !style[action] });
     if (action.startsWith('align-')) return this.format({ align: action.slice(6) });
     switch (action) {
@@ -1619,6 +1758,7 @@ class GridlineApp {
       case 'copy': return this.copy(false);
       case 'cut': return this.copy(true);
       case 'paste': return this.paste();
+      case 'format-cells': return this.showFormatCells();
       case 'format-painter': this.paintStyle = structuredClone(style); this.toast('Select a cell or range to apply the current formatting.'); return;
       case 'fill-color': $('#fill-picker').click(); return;
       case 'text-color': $('#text-picker').click(); return;
@@ -1641,7 +1781,7 @@ class GridlineApp {
       case 'clear-menu': return this.menuAt(element, [['clear','Clear contents'],['clear-format','Clear formatting'],['clear-all','Clear all']]);
       case 'clear': if (this.editable()) this.workbook.clear(this.sheet, this.selection); return;
       case 'clear-all': if (this.editable()) this.workbook.clear(this.sheet, this.selection, true); return;
-      case 'clear-format': if (this.editable()) this.workbook.transaction('Clear formatting', () => { for (const p of cellsIn(this.selection)) if (this.sheet.get(p.r, p.c)) this.workbook.setCell(this.sheet, p.r, p.c, { style: null }); }); return;
+      case 'clear-format': return this.format({ format:'general', bold:false, italic:false, underline:false, wrap:false, align:null, fill:null, color:null, border:false, borderColor:null, bottomBorder:null, fontFamily:'Aptos', fontSize:13 });
       case 'insert-row': case 'delete-row': case 'insert-column': case 'delete-column': if (this.editable()) { const axis = action.endsWith('row') ? 'row' : 'column'; this.workbook.structuralEdit(this.sheet, axis, axis === 'row' ? this.active.r : this.active.c, action.startsWith('insert') ? 1 : -1); this.toast('Structural edit applied. Chart, filter and conditional-rule metadata on this sheet was reset; Undo restores it.'); } return;
       case 'autosum': return this.autoSum();
       case 'fill-down': if (this.editable()) { const q = this.selection; const source = { ...q, r2: q.r1 }; if (q.r1 === q.r2 && q.r1 > 0) { source.r1 = source.r2 = q.r1 - 1; } this.workbook.fill(this.sheet, source, q); } return;
@@ -1704,7 +1844,7 @@ class GridlineApp {
     const q = this.selection, rows = [], cells = [];
     for (const { r,c } of cellsIn(q)) {
       if (!rows[r-q.r1]) { rows[r-q.r1] = []; cells[r-q.r1] = []; }
-      const value = this.workbook.value(this.sheet,r,c); rows[r-q.r1][c-q.c1] = value instanceof FormulaError ? value.code : value ?? ''; cells[r-q.r1][c-q.c1] = structuredClone(this.sheet.get(r,c) || { raw:'' });
+      const value = this.workbook.value(this.sheet,r,c); rows[r-q.r1][c-q.c1] = value instanceof FormulaError ? value.code : value ?? ''; cells[r-q.r1][c-q.c1] = structuredClone({ ...(this.sheet.get(r,c) || { raw:'' }), style: this.sheet.style(r,c) });
     }
     const text = serializeDelimited(rows,'\t'); this.clipboard = { text, cells, source:{...q}, sheetId:this.sheet.id, cut }; this.renderer.copyRange = {...q}; this.renderer.requestFrame(); return text;
   }
@@ -1723,7 +1863,7 @@ class GridlineApp {
       values.forEach((row,ri) => row.forEach((value,ci) => {
         const cell = internal ? structuredClone(value) : {raw:String(value)};
         if (internal && !internal.cut) cell.raw = shiftFormula(cell.raw, r0-internal.source.r1, c0-internal.source.c1);
-        this.workbook.setCell(this.sheet,r0+ri,c0+ci,null); this.workbook.setCell(this.sheet,r0+ri,c0+ci,cell);
+        if (internal) { this.workbook.setCell(this.sheet,r0+ri,c0+ci,null); this.workbook.setCell(this.sheet,r0+ri,c0+ci,cell); } else this.workbook.setRaw(this.sheet,r0+ri,c0+ci,cell.raw);
       }));
     });
     if (internal?.cut) { this.clipboard = null; this.renderer.copyRange = null; }
@@ -1773,7 +1913,7 @@ class GridlineApp {
     menu.onclick = () => menu.hidden = true;
   }
   menuAt(element, entries) { const box = element?.getBoundingClientRect(); this.contextMenu(box?.left ?? 200, box?.bottom ?? 200, entries); }
-  cellContextMenu(x, y) { this.contextMenu(x,y,[['cut','Cut','Ctrl/⌘ X'],['copy','Copy','Ctrl/⌘ C'],['paste','Paste','Ctrl/⌘ V'],null,['insert-row','Insert row above'],['insert-column','Insert column left'],['delete-row','Delete row'],['delete-column','Delete column'],null,['clear','Clear contents','Delete'],['auto-fit','Auto-fit columns'],['add-note','Add / edit note'],['inspect-formula','Inspect cell'],null,['filter','Filter values…']]); }
+  cellContextMenu(x, y) { this.contextMenu(x,y,[['cut','Cut','Ctrl/⌘ X'],['copy','Copy','Ctrl/⌘ C'],['paste','Paste','Ctrl/⌘ V'],null,['insert-row','Insert row above'],['insert-column','Insert column left'],['delete-row','Delete row'],['delete-column','Delete column'],null,['clear','Clear contents','Delete'],['format-cells','Format cells…','Ctrl/⌘ 1'],['auto-fit','Auto-fit columns'],['add-note','Add / edit note'],['inspect-formula','Inspect cell'],null,['filter','Filter values…']]); }
   showFile() {
     const card=(action,title,desc,image)=>`<button class="file-card" data-action="${action}">${icon(image)}<span><strong>${title}</strong><small>${desc}</small></span></button>`;
     this.openDialog('Your workspace', `<div class="file-hero"><div class="eyebrow">GRIDLINE / LOCAL FIRST</div><h3>Big ideas.<br>Beautifully organized.</h3><p>A spreadsheet that gives your numbers room to make sense.</p></div><div class="dialog-grid">${card('new','Blank workbook','Start with a clean sheet.','file')}${card('open','Open a workbook','Gridline, XLSX, CSV or TSV.','open')}${card('save','Save a copy','Preserve every Gridline feature.','save')}${card('export','Export your work','Excel workbook or CSV values.','export')}${card('sample','Explore the demo','A fictional revenue operations model.','table')}${card('help','Make yourself at home','Shortcuts, formulas and editing tips.','info')}</div><p class="help-text" style="margin:20px 0 0">No account. No uploads. Workbook data is processed in your browser. Local autosave is specific to this browser and site.</p>`, 620);
@@ -1915,7 +2055,7 @@ class GridlineApp {
   }
   printSheet(selected=false) {
     this.closeDialog();const q=selected?this.selection:this.sheet.usedRange();if((q.r2-q.r1+1)*(q.c2-q.c1+1)>10000)throw new Error('Print supports at most 10,000 cells. Select a smaller range.');
-    let rows='';for(let r=q.r1;r<=q.r2;r++){if(this.sheet.hiddenRows.has(r))continue;let cells='';for(let c=q.c1;c<=q.c2;c++){const merge=this.sheet.mergeAt(r,c);if(merge&&(r!==merge.r1||c!==merge.c1))continue;const style=this.sheet.get(r,c)?.style||{};const safeColor=color=>/^#[0-9a-f]{6}$/i.test(color)?color:'inherit';cells+=`<td${merge?` rowspan="${Math.min(merge.r2,q.r2)-r+1}" colspan="${Math.min(merge.c2,q.c2)-c+1}"`:''} style="background:${safeColor(style.fill)};color:${safeColor(style.color)};font-weight:${style.bold?'bold':'normal'};text-align:${['left','center','right'].includes(style.align)?style.align:typeof this.workbook.value(this.sheet,r,c)==='number'?'right':'left'}">${escapeHTML(this.workbook.display(this.sheet,r,c))}</td>`;}rows+='<tr>'+cells+'</tr>';}
+    let rows='';for(let r=q.r1;r<=q.r2;r++){if(this.sheet.hiddenRows.has(r))continue;let cells='';for(let c=q.c1;c<=q.c2;c++){const merge=this.sheet.mergeAt(r,c);if(merge&&(r!==merge.r1||c!==merge.c1))continue;const style=this.sheet.style(r,c);const safeColor=color=>/^#[0-9a-f]{6}$/i.test(color)?color:'inherit';cells+=`<td${merge?` rowspan="${Math.min(merge.r2,q.r2)-r+1}" colspan="${Math.min(merge.c2,q.c2)-c+1}"`:''} style="background:${safeColor(style.fill)};color:${safeColor(style.color)};font-weight:${style.bold?'bold':'normal'};text-align:${['left','center','right'].includes(style.align)?style.align:typeof this.workbook.value(this.sheet,r,c)==='number'?'right':'left'}">${escapeHTML(this.workbook.display(this.sheet,r,c))}</td>`;}rows+='<tr>'+cells+'</tr>';}
     $('#print-area').innerHTML=`<h1>${escapeHTML(this.workbook.title)}</h1><p class="print-meta">${escapeHTML(this.sheet.name)} · ${rangeAddress(q)} · Printed from Gridline</p><table>${rows}</table>`;window.print();
   }
 }
