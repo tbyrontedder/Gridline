@@ -409,7 +409,7 @@ export function rawValue(raw) {
 }
 const formatters = new Map();
 function numFormat(locale, options, value) { const key = JSON.stringify([locale, options]); if (!formatters.has(key)) formatters.set(key, new Intl.NumberFormat(locale, options)); return formatters.get(key).format(value); }
-export const DATE_FORMATS = ['m/d/yyyy', 'mm/dd/yy', 'yyyy-mm-dd', 'mmm d, yyyy', 'dddd, mmmm d, yyyy', 'd-mmm-yy', 'mm/dd/yyyy', 'dd/mm/yyyy', 'm/d/yy', 'm/d/yyyy h:mm'];
+export const DATE_FORMATS = ['m/d/yyyy', 'mm/dd/yy', 'yyyy-mm-dd', 'mmm d, yyyy', 'dddd, mmmm d, yyyy', 'd-mmm-yy', 'mm/dd/yyyy', 'dd/mm/yyyy', 'm/d/yy', 'm/d/yyyy h:mm', 'm/d', 'mm/dd', 'mmm d'];
 export const TIME_FORMATS = ['h:mm AM/PM', 'h:mm:ss AM/PM', 'hh:mm', 'hh:mm:ss', '[h]:mm:ss'];
 export const CURRENCIES = { USD: '$', EUR: '€', GBP: '£', JPY: '¥', CAD: 'CA$', AUD: 'A$' };
 export function numberFormatStyle(code = 'general') {
@@ -516,6 +516,15 @@ export class Sheet {
     if (this._used) return this._used;
     let r2 = 0, c2 = 0; for (const [key, cell] of this.cells) { if (!cell.raw && !cell.style) continue; const [r, c] = key.split(',').map(Number); r2 = Math.max(r2, r); c2 = Math.max(c2, c); }
     return this._used = { r1: 0, c1: 0, r2, c2 };
+  }
+  populatedRange(q) {
+    let r2 = q.r1, c2 = q.c1;
+    for (const [key, cell] of this.cells) {
+      if (cell.raw === '' || cell.raw == null) continue;
+      const [r, c] = key.split(',').map(Number);
+      if (r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2) { r2 = Math.max(r2, r); c2 = Math.max(c2, c); }
+    }
+    return { ...q, r2, c2 };
   }
   mergeAt(r, c) { return this.merges.find(q => r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2); }
   toJSON() {

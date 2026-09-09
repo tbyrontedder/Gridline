@@ -5,7 +5,7 @@
     "backend": "canvas2d",
     "reason": "WebGPU is not exposed by this browser."
   },
-  "passed": 58,
+  "passed": 81,
   "checks": [
     {
       "name": "Standalone app boots without an uncaught exception",
@@ -177,7 +177,7 @@
       "name": "Stress sheet creates 80,008 sparse cells",
       "passed": true,
       "detail": {
-        "wall_ms": 105.32
+        "wall_ms": 117.87
       }
     },
     {
@@ -193,7 +193,7 @@
       "passed": true,
       "detail": {
         "visibleCells": 576,
-        "lastFrameCPUms": 1.600000023841858,
+        "lastFrameCPUms": 2.100000023841858,
         "storedCells": 80008,
         "active": {
           "r": 10000,
@@ -447,11 +447,155 @@
       "name": "Time format choices are visible as a list",
       "passed": true,
       "detail": null
+    },
+    {
+      "name": "Whole-column copy trims empty tails and exports readable dates",
+      "passed": true,
+      "detail": "Oct 19, 1953\r\n8/3/????\r\n19651"
+    },
+    {
+      "name": "Slash splits a long formatted date into month day year",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Unknown year text keeps its placeholder",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Hyphen also splits a formatted date",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Date parts interprets an unformatted Excel serial explicitly",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Finish writes three new columns and preserves source dates",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Date splitting undoes in one step",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Month/day format hides year while retaining numeric date",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Date and bounded-copy regressions have no uncaught errors",
+      "passed": true,
+      "detail": []
+    },
+    {
+      "name": "Find defaults to displayed values and excludes hidden date serials",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Displayed search replacement cannot modify a hidden serial match",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Original-value search explicitly finds and shows the stored serial",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Original-value mode searches formula text",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Displayed-value mode excludes hidden formula text",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Find regressions have no uncaught browser errors",
+      "passed": true,
+      "detail": []
+    },
+    {
+      "name": "Wheel scrolls vertically and Shift+wheel accepts either browser axis in both directions",
+      "passed": true,
+      "detail": [
+        [
+          500,
+          620
+        ],
+        [
+          620,
+          620
+        ],
+        [
+          740,
+          620
+        ],
+        [
+          620,
+          620
+        ],
+        [
+          500,
+          620
+        ],
+        [
+          580,
+          620
+        ],
+        [
+          630,
+          620
+        ]
+      ]
+    },
+    {
+      "name": "Fill Color opens a visible color dialog",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Fill Color applies a swatch to the full selection",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Text Color opens a visible color dialog",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Text Color applies a custom color without changing fill",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Color formatting undoes as one operation",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Cancel leaves cell colors unchanged",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Color interactions have no uncaught browser errors",
+      "passed": true,
+      "detail": []
     }
   ],
   "stressMetrics": {
     "visibleCells": 576,
-    "lastFrameCPUms": 1.600000023841858,
+    "lastFrameCPUms": 2.100000023841858,
     "storedCells": 80008,
     "active": {
       "r": 10000,

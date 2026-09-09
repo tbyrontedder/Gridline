@@ -197,3 +197,17 @@ test('hidden columns preserve widths, persist, and track structural edits',()=>{
   assert.equal(numberFormatStyle('0.00').format,'number');
   assert.equal(numberFormatStyle('0" days"').format,'0" days"');
  });
+
+ test('Populated selection bounds ignore trailing blanks, styles, and other columns', () => {
+  const s = new Sheet();
+  s.cells.set('2,1',{raw:'0'}); s.cells.set('5,1',{raw:'=1'});
+  s.cells.set('900000,1',{raw:'',style:{format:'date'}});
+  s.cells.set('999999,2',{raw:'unrelated'});
+  assert.deepEqual(s.populatedRange({r1:0,c1:1,r2:MAX_ROWS-1,c2:1}),{r1:0,c1:1,r2:5,c2:1});
+  assert.deepEqual(s.populatedRange({r1:2,c1:1,r2:4,c2:1}),{r1:2,c1:1,r2:2,c2:1});
+  assert.deepEqual(s.populatedRange({r1:8,c1:4,r2:MAX_ROWS-1,c2:4}),{r1:8,c1:4,r2:8,c2:4});
+ });
+ test('Month and day formats omit the year without changing the date value', () => {
+  assert.equal(formatValue(19651,{format:'date',pattern:'m/d'}),'10/19');
+  assert.equal(formatValue(19651,{format:'date',pattern:'mmm d'}),'Oct 19');
+ });

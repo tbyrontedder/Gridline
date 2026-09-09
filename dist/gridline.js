@@ -415,7 +415,7 @@ function rawValue(raw) {
 }
 const formatters = new Map();
 function numFormat(locale, options, value) { const key = JSON.stringify([locale, options]); if (!formatters.has(key)) formatters.set(key, new Intl.NumberFormat(locale, options)); return formatters.get(key).format(value); }
-const DATE_FORMATS = ['m/d/yyyy', 'mm/dd/yy', 'yyyy-mm-dd', 'mmm d, yyyy', 'dddd, mmmm d, yyyy', 'd-mmm-yy', 'mm/dd/yyyy', 'dd/mm/yyyy', 'm/d/yy', 'm/d/yyyy h:mm'];
+const DATE_FORMATS = ['m/d/yyyy', 'mm/dd/yy', 'yyyy-mm-dd', 'mmm d, yyyy', 'dddd, mmmm d, yyyy', 'd-mmm-yy', 'mm/dd/yyyy', 'dd/mm/yyyy', 'm/d/yy', 'm/d/yyyy h:mm', 'm/d', 'mm/dd', 'mmm d'];
 const TIME_FORMATS = ['h:mm AM/PM', 'h:mm:ss AM/PM', 'hh:mm', 'hh:mm:ss', '[h]:mm:ss'];
 const CURRENCIES = { USD: '$', EUR: '€', GBP: '£', JPY: '¥', CAD: 'CA$', AUD: 'A$' };
 function numberFormatStyle(code = 'general') {
@@ -522,6 +522,15 @@ class Sheet {
     if (this._used) return this._used;
     let r2 = 0, c2 = 0; for (const [key, cell] of this.cells) { if (!cell.raw && !cell.style) continue; const [r, c] = key.split(',').map(Number); r2 = Math.max(r2, r); c2 = Math.max(c2, c); }
     return this._used = { r1: 0, c1: 0, r2, c2 };
+  }
+  populatedRange(q) {
+    let r2 = q.r1, c2 = q.c1;
+    for (const [key, cell] of this.cells) {
+      if (cell.raw === '' || cell.raw == null) continue;
+      const [r, c] = key.split(',').map(Number);
+      if (r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2) { r2 = Math.max(r2, r); c2 = Math.max(c2, c); }
+    }
+    return { ...q, r2, c2 };
   }
   mergeAt(r, c) { return this.merges.find(q => r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2); }
   toJSON() {
@@ -1430,7 +1439,7 @@ class GridlineApp {
         this.cellContextMenu(e.clientX, e.clientY, hit.colHeader && !hit.rowHeader ? 'column' : hit.rowHeader && !hit.colHeader ? 'row' : null);
       });
     });
-    this.host.addEventListener('wheel', e => this.errorBoundary(() => { e.preventDefault(); if (this.editing) this.commitEdit(false); if (e.ctrlKey || e.metaKey) this.setZoom(this.renderer.zoom + (e.deltaY > 0 ? -.1 : .1)); else { const unit = e.deltaMode === 1 ? 25 : e.deltaMode === 2 ? this.renderer.height : 1; this.renderer.scrollY += e.shiftKey ? 0 : e.deltaY * unit; this.renderer.scrollX += e.shiftKey ? e.deltaY * unit : e.deltaX * unit; this.renderer.clampScroll(); this.renderer.requestFrame(); } }), { passive: false });
+    this.host.addEventListener('wheel', e => this.errorBoundary(() => { e.preventDefault(); if (this.editing) this.commitEdit(false); if (e.ctrlKey || e.metaKey) this.setZoom(this.renderer.zoom + (e.deltaY > 0 ? -.1 : .1)); else { const unit = e.deltaMode === 1 ? 25 : e.deltaMode === 2 ? this.renderer.height : 1; this.renderer.scrollY += e.shiftKey ? 0 : e.deltaY * unit; this.renderer.scrollX += (e.shiftKey ? e.deltaX || e.deltaY : e.deltaX) * unit; this.renderer.clampScroll(); this.renderer.requestFrame(); } }), { passive: false });
     this.editor.addEventListener('compositionstart', () => this.composing = true); this.editor.addEventListener('compositionend', () => this.composing = false);
     this.editor.addEventListener('input', () => { this.formulaInput.value = this.editor.value; this.showFormulaSuggestions(this.editor); });
     this.formulaInput.addEventListener('focus', () => { if (this.editing) { this.formulaInput.value = this.editor.value; this.editing = false; this.editor.hidden = true; } this.barEditing = true; $('#mode-status').textContent = 'Edit'; });
@@ -1439,8 +1448,6 @@ class GridlineApp {
     $('#name-box').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); const value = e.target.value.trim(), named = this.workbook.names[value.toUpperCase()]; let q = parseRange(value); if (!q && named) { const parts = named.split('!'); const name = parts[0].replace(/^'|'$/g, '').replaceAll("''", "'"); const sheet = this.workbook.sheetByName(name); if (sheet) { this.switchSheet(sheet.id); q = parseRange(parts[1]); } } if (q) { this.anchor = { r: q.r1, c: q.c1 }; this.select(q, this.anchor, true); this.host.focus(); } else this.toast('Enter a cell or range, for example A1, B2:F20, or a defined name.', true); } });
     $('#workbook-title').addEventListener('change', e => this.workbook.mutate('Rename workbook', () => this.workbook.title = e.target.value.trim().slice(0, 200) || 'Untitled workbook'));
     $('#zoom-slider').addEventListener('input', e => this.setZoom(+e.target.value / 100));
-    $('#fill-picker').addEventListener('input', e => this.errorBoundary(() => this.format({ fill: e.target.value })));
-    $('#text-picker').addEventListener('input', e => this.errorBoundary(() => this.format({ color: e.target.value })));
     $('#file-input').addEventListener('change', e => { const file = e.target.files[0]; if (file) this.errorBoundary(() => this.openFile(file)); e.target.value = ''; });
     this.host.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
     this.host.addEventListener('drop', e => { e.preventDefault(); const file = e.dataTransfer.files[0]; if (file) this.errorBoundary(() => this.openFile(file)); });
@@ -1648,6 +1655,18 @@ class GridlineApp {
   }
   setZoom(zoom) { this.renderer.setZoom(Math.round(zoom * 10) / 10); $('#zoom-value').textContent = Math.round(this.renderer.zoom * 100) + '%'; $('#zoom-slider').value = this.renderer.zoom * 100; this.positionCharts(); }
   format(style) { if (this.editable()) this.workbook.applyStyle(this.sheet, this.selection, style); }
+  showColorPicker(property) {
+    if (!this.editable()) return;
+    const sheet = this.sheet, q = {...this.selection}, current = sheet.style(this.active.r,this.active.c)[property];
+    const initial = /^#[0-9a-f]{6}$/i.test(current || '') ? current : property === 'fill' ? '#e2efda' : '#176b4a';
+    const colors = ['#ffffff','#000000','#293b32','#176b4a','#e2efda','#ff0000','#ffc000','#ffff00','#00b050','#00b0f0','#0070c0','#7030a0'];
+    this.openDialog(property === 'fill' ? 'Fill Color' : 'Text Color', `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:18px">${colors.map(color=>`<button type="button" data-swatch="${color}" aria-label="Color ${color}" title="${color}" style="height:32px;background:${color};border:1px solid var(--line)"></button>`).join('')}</div><label class="field-label" for="color-picker">Custom color</label><input id="color-picker" type="color" value="${initial}" style="width:100%;height:40px"><label class="field-label" for="color-hex">Hex color</label><input id="color-hex" class="dialog-input" value="${initial}" pattern="#[0-9a-fA-F]{6}" required maxlength="7"><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Cancel</button><button id="color-apply" class="primary-btn">Apply</button></div>`, 360);
+    const picker = $('#color-picker'), hex = $('#color-hex');
+    $$('[data-swatch]').forEach(button => button.onclick = () => { picker.value = hex.value = button.dataset.swatch; });
+    picker.oninput = () => { hex.value = picker.value; };
+    hex.oninput = () => { if (hex.validity.valid) picker.value = hex.value; };
+    $('#color-apply').onclick = () => this.errorBoundary(() => { if (!hex.reportValidity()) return; this.workbook.applyStyle(sheet,q,{[property]:hex.value.toLowerCase()}); this.closeDialog(); });
+  }
   showFormatCells() {
     if (!this.editable()) return;
     const q = { ...this.selection }, sheet = this.sheet, current = sheet.style(this.active.r, this.active.c);
@@ -1714,8 +1733,8 @@ class GridlineApp {
       case 'paste': return this.paste();
       case 'format-cells': return this.showFormatCells();
       case 'format-painter': this.paintStyle = structuredClone(style); this.toast('Select a cell or range to apply the current formatting.'); return;
-      case 'fill-color': $('#fill-picker').click(); return;
-      case 'text-color': $('#text-picker').click(); return;
+      case 'fill-color': return this.showColorPicker('fill');
+      case 'text-color': return this.showColorPicker('color');
       case 'borders': return this.format({ border: !style.border });
       case 'currency': case 'percent': case 'number': return this.format({ format: action, decimals: undefined });
       case 'decimal-less': return this.format({ decimals: Math.max(0, (style.decimals ?? 2) - 1) });
@@ -1805,10 +1824,10 @@ class GridlineApp {
     this.setWorkbook(workbook); this.toast(warnings?.[0] || `Opened ${file.name}.`);
   }
   clipboardPayload(cut = false) {
-    const q = this.selection, rows = [], cells = [];
+    const q = this.sheet.populatedRange(this.selection), rows = [], cells = [];
     for (const { r,c } of cellsIn(q)) {
       if (!rows[r-q.r1]) { rows[r-q.r1] = []; cells[r-q.r1] = []; }
-      const value = this.workbook.value(this.sheet,r,c); rows[r-q.r1][c-q.c1] = value instanceof FormulaError ? value.code : value ?? ''; cells[r-q.r1][c-q.c1] = structuredClone({ ...(this.sheet.get(r,c) || { raw:'' }), style: this.sheet.style(r,c) });
+      rows[r-q.r1][c-q.c1] = this.workbook.display(this.sheet,r,c); cells[r-q.r1][c-q.c1] = structuredClone({ ...(this.sheet.get(r,c) || { raw:'' }), style: this.sheet.style(r,c) });
     }
     const text = serializeDelimited(rows,'\t'); this.clipboard = { text, cells, source:{...q}, sheetId:this.sheet.id, cut }; this.renderer.copyRange = {...q}; this.renderer.requestFrame(); return text;
   }
@@ -1896,15 +1915,18 @@ class GridlineApp {
     const sheet = this.sheet, q = {...this.selection};
     if (q.c1 !== q.c2) throw new Error('Select one column to split.');
     if (q.r1 === q.r2) q.r2 = this.dataRange().r2;
-    q.r2 = Math.min(q.r2, sheet.usedRange().r2);
+    q.r2 = sheet.populatedRange(q).r2;
     if (q.r2 < q.r1 || q.r2-q.r1+1 > MAX_RANGE_CELLS) throw new Error('Select up to 200,000 source cells.');
-    this.openDialog('Text to Columns', `<p class="help-text">Split ${rangeAddress(q)} using a delimiter. Double quotes qualify text. Formula results are converted to values.</p><label class="field-label" for="split-delimiter">Delimiter</label><select id="split-delimiter" class="dialog-input"><option value=",">Comma</option><option value="tab">Tab</option><option value=";">Semicolon</option><option value=" ">Space</option><option value="other">Other</option></select><input id="split-other" class="dialog-input" aria-label="Other delimiter" maxlength="1" placeholder="Custom delimiter" hidden><label class="field-label" for="split-destination">Destination</label><input id="split-destination" class="dialog-input" value="${address(q.r1,q.c1)}"><label class="field-label" for="split-format">Output format</label><select id="split-format" class="dialog-input"><option value="general">General</option><option value="text">Text (keep leading zeros)</option></select><label class="field-label">Preview (first 5 rows)</label><div id="split-preview" style="overflow:auto;max-height:180px"></div><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Cancel</button><button id="split-apply" class="primary-btn">Finish</button></div>`,620);
+    this.openDialog('Text to Columns', `<p class="help-text">Split ${rangeAddress(q)} using a delimiter. Dates split into month, day, and year with Slash, Hyphen, or Date parts. Text such as 8/3/???? keeps its unknown year. Formula results are converted to values.</p><label class="field-label" for="split-delimiter">Delimiter</label><select id="split-delimiter" class="dialog-input"><option value="/">Slash (/)</option><option value="-">Hyphen (-)</option><option value="date">Date parts (Month / Day / Year, including Excel numbers)</option><option value=",">Comma</option><option value="tab">Tab</option><option value=";">Semicolon</option><option value=" ">Space</option><option value="other">Other</option></select><input id="split-other" class="dialog-input" aria-label="Other delimiter" maxlength="1" placeholder="Custom delimiter" hidden><label class="field-label" for="split-destination">Destination</label><input id="split-destination" class="dialog-input" value="${address(q.r1,q.c1)}"><label class="field-label" for="split-format">Output format</label><select id="split-format" class="dialog-input"><option value="general">General</option><option value="text">Text (keep leading zeros)</option></select><label class="field-label">Preview (first 5 rows)</label><div id="split-preview" style="overflow:auto;max-height:180px"></div><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Cancel</button><button id="split-apply" class="primary-btn">Finish</button></div>`,620);
     const read = (limit = q.r2) => {
-      const delimiter = $('#split-delimiter').value === 'tab' ? '\t' : $('#split-delimiter').value === 'other' ? $('#split-other').value : $('#split-delimiter').value;
+      const mode = $('#split-delimiter').value;
+      const delimiter = mode === 'date' ? '/' : $('#split-delimiter').value === 'tab' ? '\t' : $('#split-delimiter').value === 'other' ? $('#split-other').value : $('#split-delimiter').value;
       if (delimiter.length !== 1) throw new Error('Enter one delimiter character.');
       const rows = [];
       for (let r=q.r1;r<=limit;r++) {
-        const style = sheet.style(r,q.c1), value = ['date','time'].includes(numberFormatStyle(style.format).format) ? this.workbook.display(sheet,r,q.c1) : this.workbook.value(sheet,r,q.c1);
+        const style = sheet.style(r,q.c1), fmt = numberFormatStyle(style.format).format, raw = this.workbook.value(sheet,r,q.c1);
+        const date = typeof raw === 'number' && (mode === 'date' || fmt === 'date' && ['/', '-'].includes(delimiter));
+        const value = date ? formatValue(raw, {format:'date', pattern:`m${delimiter}d${delimiter}yyyy`}) : ['date','time'].includes(fmt) ? this.workbook.display(sheet,r,q.c1) : raw;
         const parsed = parseDelimited(String(value ?? ''),delimiter);
         if (parsed.length !== 1) throw new Error('Line breaks inside a source cell must be enclosed in double quotes.');
         rows.push(parsed[0]);
@@ -1912,6 +1934,8 @@ class GridlineApp {
       return rows;
     };
     const preview = () => { $('#split-other').hidden = $('#split-delimiter').value !== 'other'; try { $('#split-preview').innerHTML='<table>'+read(Math.min(q.r2,q.r1+4)).map(row=>'<tr>'+row.map(v=>`<td style="border:1px solid #ccc;padding:6px">${escapeHTML(v)}</td>`).join('')+'</tr>').join('')+'</table>'; } catch(e) { $('#split-preview').textContent=e.message; } };
+    const first = this.workbook.display(sheet,q.r1,q.c1);
+    $('#split-delimiter').value = numberFormatStyle(sheet.style(q.r1,q.c1).format).format === 'date' || first.includes('/') ? '/' : first.includes('-') ? '-' : ',';
     $('#split-delimiter').onchange=preview; $('#split-other').oninput=preview; preview();
     $('#split-apply').onclick=()=>this.errorBoundary(()=>{
       const rows=read(), dest=parseAddress($('#split-destination').value.trim()), width=rows.reduce((n,row)=>Math.max(n,row.length),0), text=$('#split-format').value==='text';
@@ -1973,13 +1997,13 @@ class GridlineApp {
   showFind() {
     const scope = {...this.selection}, column = this.active.c, sheetId = this.sheet.id;
     const includes = (r,c) => this.sheet.id === sheetId && ($('#find-scope').value === 'sheet' || ($('#find-scope').value === 'column' ? c === column : r >= scope.r1 && r <= scope.r2 && c >= scope.c1 && c <= scope.c2));
-    this.openPanel('find','Find & replace',`<label class="field-label" for="find-scope">Within</label><select id="find-scope" class="panel-input"><option value="sheet">Sheet</option><option value="column">Column ${colName(column)}</option><option value="selection">Selection ${rangeAddress(scope)}</option></select><label class="field-label">Find</label><input id="find-query" class="panel-input" placeholder="Search values and formulas…"><label class="field-label">Replace with</label><input id="replace-query" class="panel-input" placeholder="Replacement text"><div class="panel-actions"><button class="primary-btn" id="find-next">Find next</button><button class="secondary-btn" id="replace-all">Replace all</button></div><p class="help-text">Search matches displayed values and original input. Replace edits original input, including formulas. Replace is case-sensitive. The scope stays fixed while navigating results. Results are limited to 200; Replace all processes every match in scope.</p><div id="find-count" class="badge">Enter a search term</div><div class="result-list" id="find-results"></div>`);
+    this.openPanel('find','Find & replace',`<label class="field-label" for="find-scope">Within</label><select id="find-scope" class="panel-input"><option value="sheet">Sheet</option><option value="column">Column ${colName(column)}</option><option value="selection">Selection ${rangeAddress(scope)}</option></select><label class="field-label" for="find-look-in">Look in</label><select id="find-look-in" class="panel-input"><option value="display">Displayed values</option><option value="raw">Original values and formulas</option></select><label class="field-label">Find</label><input id="find-query" class="panel-input" placeholder="Search…"><label class="field-label">Replace with</label><input id="replace-query" class="panel-input" placeholder="Replacement text"><div class="panel-actions"><button class="primary-btn" id="find-next">Find next</button><button class="secondary-btn" id="replace-all">Replace all</button></div><p class="help-text">Search uses displayed values by default. Choose original values and formulas to search stored numbers or formula text. Replace edits original input in matching cells, including formulas. Replace is case-sensitive. The scope stays fixed while navigating results. Results are limited to 200; Replace all processes every match in scope.</p><div id="find-count" class="badge">Enter a search term</div><div class="result-list" id="find-results"></div>`);
     let matches=[],next=-1;
-    const search=()=>{const query=$('#find-query').value.toLowerCase();matches=[];if(query)for(const [key,cell]of this.sheet.cells){const [r,c]=key.split(',').map(Number);if(!includes(r,c))continue;const display=this.workbook.display(this.sheet,r,c);if(cell.raw.toLowerCase().includes(query)||display.toLowerCase().includes(query)){matches.push({r,c,display});if(matches.length>=200)break;}}matches.sort((a,b)=>a.r-b.r||a.c-b.c);next=-1;$('#find-count').textContent=query?`${matches.length}${matches.length===200?'+':''} matches`:'Enter a search term';$('#find-results').innerHTML=matches.map((m,i)=>`<button class="find-result" data-result="${i}"><b>${address(m.r,m.c)}</b><span>${escapeHTML(m.display.slice(0,120))}</span></button>`).join('');$$('[data-result]').forEach(b=>b.onclick=()=>{const m=matches[+b.dataset.result];this.goto(m.r,m.c);});};
-    $('#find-scope').value = scope.r1 !== scope.r2 || scope.c1 !== scope.c2 ? 'selection' : 'sheet'; $('#find-scope').onchange=search;
+    const search=()=>{const query=$('#find-query').value.toLowerCase();matches=[];if(query)for(const [key,cell]of this.sheet.cells){const [r,c]=key.split(',').map(Number);if(!includes(r,c))continue;const display=this.workbook.display(this.sheet,r,c);const text=$('#find-look-in').value==='raw'?cell.raw:display;if(text.toLowerCase().includes(query)){matches.push({r,c,display:text});if(matches.length>=200)break;}}matches.sort((a,b)=>a.r-b.r||a.c-b.c);next=-1;$('#find-count').textContent=query?`${matches.length}${matches.length===200?'+':''} matches`:'Enter a search term';$('#find-results').innerHTML=matches.map((m,i)=>`<button class="find-result" data-result="${i}"><b>${address(m.r,m.c)}</b><span>${escapeHTML(m.display.slice(0,120))}</span></button>`).join('');$$('[data-result]').forEach(b=>b.onclick=()=>{const m=matches[+b.dataset.result];this.goto(m.r,m.c);});};
+    $('#find-scope').value = scope.r1 !== scope.r2 || scope.c1 !== scope.c2 ? 'selection' : 'sheet'; $('#find-scope').onchange=search; $('#find-look-in').onchange=search;
     $('#find-query').oninput=search;$('#find-next').onclick=()=>{if(matches.length){const m=matches[++next%matches.length];this.goto(m.r,m.c);}};
     $('#find-query').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('#find-next').click();}};
-    $('#replace-all').onclick=()=>this.errorBoundary(()=>{if(!this.editable())return;const query=$('#find-query').value,replace=$('#replace-query').value;if(!query)return;let count=0;this.workbook.transaction('Replace all',()=>{for(const [key,cell]of this.sheet.cells){if(!cell.raw.includes(query))continue;const [r,c]=key.split(',').map(Number);if(!includes(r,c))continue;this.workbook.setRaw(this.sheet,r,c,cell.raw.split(query).join(replace));count++;}});this.toast(`Replaced exact, case-sensitive matches in ${count} cells.`);search();});$('#find-query').focus();
+    $('#replace-all').onclick=()=>this.errorBoundary(()=>{if(!this.editable())return;const query=$('#find-query').value,replace=$('#replace-query').value;if(!query)return;let count=0;this.workbook.transaction('Replace all',()=>{for(const [key,cell]of this.sheet.cells){if(!cell.raw.includes(query))continue;const [r,c]=key.split(',').map(Number);if(!includes(r,c)||$('#find-look-in').value==='display'&&!this.workbook.display(this.sheet,r,c).toLowerCase().includes(query.toLowerCase()))continue;this.workbook.setRaw(this.sheet,r,c,cell.raw.split(query).join(replace));count++;}});this.toast(`Replaced exact, case-sensitive matches in ${count} cells.`);search();});$('#find-query').focus();
   }
   showNotes() {
     const notes=[];for(const [key,cell]of this.sheet.cells)if(cell.note){const[r,c]=key.split(',').map(Number);notes.push({r,c,text:cell.note});}
