@@ -494,8 +494,8 @@ let nextSheetId = 1;
 class Sheet {
   constructor(name = 'Sheet1', data = null) {
     this.id = `s${Date.now().toString(36)}${nextSheetId++}`; this.name = name; this.cells = new Map(); this.colWidths = new Map(); this.rowHeights = new Map(); this.colStyles = new Map(); this.rowStyles = new Map();
-    this.merges = []; this.conditionalRules = []; this.hiddenRows = new Set(); this.filters = null; this.freezeRows = 0; this.freezeCols = 0; this.charts = []; this.gridlines = true; this.color = '#18835a'; this.revision = 0; this._used = null;
-    if (data) { for (const prop of ['id','name','merges','conditionalRules','filters','freezeRows','freezeCols','charts','gridlines','color','revision','protected','dataRegion']) if (Object.hasOwn(data, prop)) this[prop] = data[prop]; this.colStyles = new Map(data.colStyles ?? []); this.rowStyles = new Map(data.rowStyles ?? []); this.cells = new Map(data.cells ?? []); this.colWidths = new Map(data.colWidths ?? []); this.rowHeights = new Map(data.rowHeights ?? []); this.hiddenRows = new Set(data.hiddenRows ?? []); this._used = null; }
+    this.merges = []; this.conditionalRules = []; this.hiddenCols = new Set(); this.hiddenRows = new Set(); this.filters = null; this.freezeRows = 0; this.freezeCols = 0; this.charts = []; this.gridlines = true; this.color = '#18835a'; this.revision = 0; this._used = null;
+    if (data) { for (const prop of ['id','name','merges','conditionalRules','filters','freezeRows','freezeCols','charts','gridlines','color','revision','protected','dataRegion']) if (Object.hasOwn(data, prop)) this[prop] = data[prop]; this.colStyles = new Map(data.colStyles ?? []); this.rowStyles = new Map(data.rowStyles ?? []); this.cells = new Map(data.cells ?? []); this.colWidths = new Map(data.colWidths ?? []); this.rowHeights = new Map(data.rowHeights ?? []); this.hiddenRows = new Set(data.hiddenRows ?? []); this.hiddenCols = new Set(data.hiddenCols ?? []); this._used = null; }
   }
   get(r, c) { return this.cells.get(keyOf(r, c)); }
   style(r, c) { return { ...this.colStyles.get(c), ...this.rowStyles.get(r), ...this.get(r, c)?.style }; }
@@ -507,7 +507,7 @@ class Sheet {
   }
   mergeAt(r, c) { return this.merges.find(q => r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2); }
   toJSON() {
-    const { _used, ...rest } = this; return { ...rest, cells: [...this.cells], colStyles: [...this.colStyles], rowStyles: [...this.rowStyles], colWidths: [...this.colWidths], rowHeights: [...this.rowHeights], hiddenRows: [...this.hiddenRows] };
+    const { _used, ...rest } = this; return { ...rest, cells: [...this.cells], colStyles: [...this.colStyles], rowStyles: [...this.rowStyles], colWidths: [...this.colWidths], rowHeights: [...this.rowHeights], hiddenCols: [...this.hiddenCols], hiddenRows: [...this.hiddenRows] };
   }
 }
 class Workbook {
@@ -647,6 +647,7 @@ class Workbook {
       for (const [key, cell] of sheet.cells) { const p = key.split(',').map(Number); if (delta < 0 && p[coord] === at) continue; if (p[coord] >= at) p[coord] += delta; if (p[coord] < limit) next.set(keyOf(...p), cell); }
       sheet.cells = next;
       for (const prop of axis === 'row' ? ['rowHeights','rowStyles'] : ['colWidths','colStyles']) { const mapped = new Map(); for (const [i, value] of sheet[prop]) { if (delta < 0 && i === at) continue; const n = i >= at ? i + delta : i; if (n < limit) mapped.set(n, value); } sheet[prop] = mapped; }
+      if (axis === 'column') sheet.hiddenCols = new Set([...sheet.hiddenCols].filter(i => !(delta < 0 && i === at)).map(i => i >= at ? i + delta : i).filter(i => i < MAX_COLS));
       sheet.hiddenRows.clear(); sheet.filters = null; sheet.dataRegion = null;
       const a = axis === 'row' ? 'r1' : 'c1', b = axis === 'row' ? 'r2' : 'c2';
       sheet.merges = sheet.merges.filter(q => !(delta < 0 && q[a] === at && q[b] === at)).map(q => { const n = { ...q }; if (delta > 0) { if (n[a] >= at) n[a]++; if (n[b] >= at) n[b]++; } else { if (n[a] > at) n[a]--; if (n[b] >= at) n[b]--; } return n; });
@@ -657,9 +658,20 @@ class Workbook {
     });
   }
   sort(sheet, q, column, descending = false, header = true) {
+    const levels = Array.isArray(column) ? column : [{ column, descending }];
+    if (!levels.length || levels.some(l => !Number.isInteger(l.column) || l.column < q.c1 || l.column > q.c2)) throw new Error('Choose a sort column inside the range.');
+    if ((q.r2-q.r1+1)*(q.c2-q.c1+1) > MAX_RANGE_CELLS) throw new Error('Sort is limited to 200,000 cells.');
+    if (sheet.merges.some(m => m.r1 <= q.r2 && m.r2 >= q.r1 && m.c1 <= q.c2 && m.c2 >= q.c1)) throw new Error('Unmerge cells before sorting this range.');
     const first = q.r1 + (header ? 1 : 0); if (first > q.r2) return;
-    const rows = []; for (let r = first; r <= q.r2; r++) rows.push({ r, value: this.value(sheet, r, column), cells: Array.from({ length: q.c2 - q.c1 + 1 }, (_, i) => clone(sheet.get(r, q.c1 + i) ?? { raw: '' })) });
-    rows.sort((a, b) => { if (a.value == null) return b.value == null ? a.r - b.r : 1; if (b.value == null) return -1; return (compare(a.value instanceof FormulaError ? a.value.code : a.value, b.value instanceof FormulaError ? b.value.code : b.value) * (descending ? -1 : 1)) || a.r - b.r; });
+    const rows = []; for (let r = first; r <= q.r2; r++) rows.push({ r, values: levels.map(l => this.value(sheet, r, l.column)), cells: Array.from({ length: q.c2 - q.c1 + 1 }, (_, i) => clone(sheet.get(r, q.c1 + i) ?? { raw: '' })) });
+    rows.sort((a, b) => {
+      for (let i = 0; i < levels.length; i++) {
+        const av = a.values[i], bv = b.values[i];
+        const order = av == null ? (bv == null ? 0 : 1) : bv == null ? -1 : compare(av instanceof FormulaError ? av.code : av, bv instanceof FormulaError ? bv.code : bv) * (levels[i].descending ? -1 : 1);
+        if (order) return order;
+      }
+      return a.r - b.r;
+    });
     this.transaction('Sort range', () => rows.forEach((row, i) => row.cells.forEach((cell, j) => { cell.raw = shiftFormula(cell.raw, first + i - row.r, 0); this.setCell(sheet, first + i, q.c1 + j, cell); })));
   }
 }
@@ -790,7 +802,7 @@ class GridRenderer {
     this.canvas.style.width = this.width + 'px'; this.canvas.style.height = this.height + 'px'; this.requestFrame();
   }
   syncLayout() {
-    const sheet = this.workbook.activeSheet; this.cols = new AxisLayout(MAX_COLS, 106, sheet.colWidths); this.rows = new AxisLayout(MAX_ROWS, 27, sheet.rowHeights, sheet.hiddenRows); this.requestFrame();
+    const sheet = this.workbook.activeSheet; this.cols = new AxisLayout(MAX_COLS, 106, sheet.colWidths, sheet.hiddenCols); this.rows = new AxisLayout(MAX_ROWS, 27, sheet.rowHeights, sheet.hiddenRows); this.requestFrame();
   }
   setZoom(zoom) {
     const old = this.zoom; this.zoom = Math.max(0.5, Math.min(2, zoom)); this.scrollX *= this.zoom / old; this.scrollY *= this.zoom / old;
@@ -1197,7 +1209,7 @@ function exportXLSX(workbook) {
     for (const r of new Set([...sheet.rowHeights.keys(), ...sheet.rowStyles.keys()])) if (!rows.has(r)) rows.set(r, []);
     const rowXML = [...rows].sort(([a], [b]) => a - b).map(([r, cells]) => `<row r="${r + 1}"${sheet.rowStyles.has(r) ? ` s="${styles.idFor(sheet.rowStyles.get(r))}" customFormat="1"` : ''}${sheet.rowHeights.has(r) ? ` ht="${sheet.rowHeights.get(r) * 0.75}" customHeight="1"` : ''}${sheet.hiddenRows.has(r) ? ' hidden="1"' : ''}>${cells.sort((a, b) => a.c - b.c).map(c => c.xml).join('')}</row>`).join('');
     const pane = sheet.freezeRows || sheet.freezeCols ? `<pane xSplit="${sheet.freezeCols}" ySplit="${sheet.freezeRows}" topLeftCell="${address(sheet.freezeRows, sheet.freezeCols)}" activePane="${sheet.freezeRows && sheet.freezeCols ? 'bottomRight' : sheet.freezeRows ? 'bottomLeft' : 'topRight'}" state="frozen"/>` : '';
-    files[`xl/worksheets/sheet${i + 1}.xml`] = xmlHeader + `<worksheet xmlns="${spreadsheetNS}"><dimension ref="A1:${address(sheet.usedRange().r2, sheet.usedRange().c2)}"/><sheetViews><sheetView workbookViewId="0" showGridLines="${sheet.gridlines ? 1 : 0}">${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="20.25"/>${sheet.colWidths.size || sheet.colStyles.size ? '<cols>' + [...new Set([...sheet.colWidths.keys(), ...sheet.colStyles.keys()])].sort((a,b) => a-b).map(c => `<col min="${c + 1}" max="${c + 1}"${sheet.colWidths.has(c) ? ` width="${Math.max(1, (sheet.colWidths.get(c) - 5) / 7)}" customWidth="1"` : ''}${sheet.colStyles.has(c) ? ` style="${styles.idFor(sheet.colStyles.get(c))}"` : ''}/>`).join('') + '</cols>' : ''}<sheetData>${rowXML}</sheetData>${sheet.filters ? `<autoFilter ref="${address(sheet.filters.range.r1, sheet.filters.range.c1)}:${address(sheet.filters.range.r2, sheet.filters.range.c2)}"/>` : ''}${sheet.merges.length ? `<mergeCells count="${sheet.merges.length}">${sheet.merges.map(m => `<mergeCell ref="${address(m.r1, m.c1)}:${address(m.r2, m.c2)}"/>`).join('')}</mergeCells>` : ''}<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`;
+    files[`xl/worksheets/sheet${i + 1}.xml`] = xmlHeader + `<worksheet xmlns="${spreadsheetNS}"><dimension ref="A1:${address(sheet.usedRange().r2, sheet.usedRange().c2)}"/><sheetViews><sheetView workbookViewId="0" showGridLines="${sheet.gridlines ? 1 : 0}">${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="20.25"/>${sheet.colWidths.size || sheet.colStyles.size || sheet.hiddenCols.size ? '<cols>' + [...new Set([...sheet.colWidths.keys(), ...sheet.colStyles.keys(), ...sheet.hiddenCols])].sort((a,b) => a-b).map(c => `<col min="${c + 1}" max="${c + 1}"${sheet.colWidths.has(c) ? ` width="${Math.max(1, (sheet.colWidths.get(c) - 5) / 7)}" customWidth="1"` : ''}${sheet.hiddenCols.has(c) ? ' hidden="1"' : ''}${sheet.colStyles.has(c) ? ` style="${styles.idFor(sheet.colStyles.get(c))}"` : ''}/>`).join('') + '</cols>' : ''}<sheetData>${rowXML}</sheetData>${sheet.filters ? `<autoFilter ref="${address(sheet.filters.range.r1, sheet.filters.range.c1)}:${address(sheet.filters.range.r2, sheet.filters.range.c2)}"/>` : ''}${sheet.merges.length ? `<mergeCells count="${sheet.merges.length}">${sheet.merges.map(m => `<mergeCell ref="${address(m.r1, m.c1)}:${address(m.r2, m.c2)}"/>`).join('')}</mergeCells>` : ''}<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`;
   });
   return zipStore(files);
 }
@@ -1256,7 +1268,7 @@ async function importXLSX(buffer, title = 'Imported workbook') {
       sheet.cells.set(keyOf(ref.r, ref.c), { raw, ...(cell.hasAttribute('s') ? { style: structuredClone(styles[+cell.getAttribute('s')] || {}) } : {}) });
     }
     for (const row of elements(doc, 'row')) { const r = +row.getAttribute('r') - 1; if (r < 0 || r >= 1048576) continue; if (row.hasAttribute('s')) sheet.rowStyles.set(r, structuredClone(styles[+row.getAttribute('s')] || {})); if (row.hasAttribute('ht')) sheet.rowHeights.set(r, Math.max(16, Math.min(400, +row.getAttribute('ht') / 0.75))); if (row.getAttribute('hidden') === '1') sheet.hiddenRows.add(r); }
-    for (const col of elements(doc, 'col')) { const min = +col.getAttribute('min') - 1, max = Math.min(16383, +col.getAttribute('max') - 1), width = +col.getAttribute('width') * 7 + 5; for (let c = Math.max(0, min); c <= max; c++) { if (col.hasAttribute('width')) sheet.colWidths.set(c, Math.max(26, Math.min(1200, width))); if (col.hasAttribute('style')) sheet.colStyles.set(c, structuredClone(styles[+col.getAttribute('style')] || {})); } }
+    for (const col of elements(doc, 'col')) { const min = +col.getAttribute('min') - 1, max = Math.min(16383, +col.getAttribute('max') - 1), width = +col.getAttribute('width') * 7 + 5; for (let c = Math.max(0, min); c <= max; c++) { if (col.getAttribute('hidden') === '1' || col.getAttribute('hidden') === 'true') sheet.hiddenCols.add(c); if (col.hasAttribute('width')) sheet.colWidths.set(c, Math.max(26, Math.min(1200, width))); if (col.hasAttribute('style')) sheet.colStyles.set(c, structuredClone(styles[+col.getAttribute('style')] || {})); } }
     for (const cell of elements(doc, 'mergeCell')) { const q = parseRange(cell.getAttribute('ref')); if (q) sheet.merges.push(q); }
     const pane = firstElement(doc, 'pane'); if (pane?.getAttribute('state') === 'frozen') { sheet.freezeRows = Math.min(1000, +pane.getAttribute('ySplit') || 0); sheet.freezeCols = Math.min(100, +pane.getAttribute('xSplit') || 0); }
     const view = firstElement(doc, 'sheetView'); sheet.gridlines = view?.getAttribute('showGridLines') !== '0';
@@ -1310,7 +1322,7 @@ const group = (label, content, extra = '') => `<div class="ribbon-group ${extra}
 const STORAGE_KEY = 'gridline.workbook.v1';
 const COMMANDS = [
   ['new','New workbook','file','Ctrl/⌘ N'],['open','Open workbook','open','Ctrl/⌘ O'],['save','Save Gridline workbook','save','Ctrl/⌘ S'],['export-xlsx','Export Excel workbook (.xlsx)','export',''],['export-csv','Export current sheet as CSV','export',''],
-  ['format-cells','Format cells…','table','Ctrl/⌘ 1'],['find','Find and replace','search','Ctrl/⌘ F'],['chart','Insert chart','chart',''],['functions','Insert function','function',''],['name-manager','Named ranges','name',''],['sort','Sort range','sort',''],['filter','Filter values','filter',''],['conditional','Conditional formatting','conditional',''],['format-table','Format as table','table',''],['freeze-top','Freeze top row','freeze',''],['freeze-first','Freeze first column','freeze',''],['freeze','Freeze at active cell','freeze',''],['unfreeze','Unfreeze panes','freeze',''],['toggle-gridlines','Toggle gridlines','grid',''],['show-formulas','Show formulas','function','Ctrl/⌘ `'],['add-note','Add a cell note','comment',''],['notes','View notes','comment',''],['insert-row','Insert row','insert',''],['insert-column','Insert column','insert',''],['delete-row','Delete row','delete',''],['delete-column','Delete column','delete',''],['add-sheet','Add worksheet','plus',''],['duplicate-sheet','Duplicate worksheet','copy',''],['theme','Toggle dark mode','moon',''],['recalculate','Recalculate workbook','refresh',''],['performance','Renderer diagnostics','grid',''],['print','Print worksheet','print','Ctrl/⌘ P'],['help','Keyboard shortcuts','info','F1']
+  ['hide-columns','Hide columns','table',''],['unhide-columns','Unhide columns','table',''],['unhide-all-columns','Unhide all columns','table',''],['text-to-columns','Text to Columns','table',''],['format-cells','Format cells…','table','Ctrl/⌘ 1'],['find','Find and replace','search','Ctrl/⌘ F'],['chart','Insert chart','chart',''],['functions','Insert function','function',''],['name-manager','Named ranges','name',''],['sort','Sort range','sort',''],['filter','Filter values','filter',''],['conditional','Conditional formatting','conditional',''],['format-table','Format as table','table',''],['freeze-top','Freeze top row','freeze',''],['freeze-first','Freeze first column','freeze',''],['freeze','Freeze at active cell','freeze',''],['unfreeze','Unfreeze panes','freeze',''],['toggle-gridlines','Toggle gridlines','grid',''],['show-formulas','Show formulas','function','Ctrl/⌘ `'],['add-note','Add a cell note','comment',''],['notes','View notes','comment',''],['insert-row','Insert row','insert',''],['insert-column','Insert column','insert',''],['delete-row','Delete row','delete',''],['delete-column','Delete column','delete',''],['add-sheet','Add worksheet','plus',''],['duplicate-sheet','Duplicate worksheet','copy',''],['theme','Toggle dark mode','moon',''],['recalculate','Recalculate workbook','refresh',''],['performance','Renderer diagnostics','grid',''],['print','Print worksheet','print','Ctrl/⌘ P'],['help','Keyboard shortcuts','info','F1']
 ];
 class GridlineApp {
   constructor() {
@@ -1397,7 +1409,7 @@ class GridlineApp {
           const selected = hit.colHeader && !hit.rowHeader ? q.r1 === 0 && q.r2 === MAX_ROWS - 1 && hit.c >= q.c1 && hit.c <= q.c2 : hit.rowHeader && !hit.colHeader && q.c1 === 0 && q.c2 === MAX_COLS - 1 && hit.r >= q.r1 && hit.r <= q.r2;
           if (!selected) this.select({ r1: hit.colHeader ? 0 : hit.r, r2: hit.colHeader ? MAX_ROWS - 1 : hit.r, c1: hit.rowHeader ? 0 : hit.c, c2: hit.rowHeader ? MAX_COLS - 1 : hit.c }, { r: hit.colHeader ? 0 : hit.r, c: hit.rowHeader ? 0 : hit.c });
         } else if (hit.r < q.r1 || hit.r > q.r2 || hit.c < q.c1 || hit.c > q.c2) this.goto(hit.r, hit.c);
-        this.cellContextMenu(e.clientX, e.clientY);
+        this.cellContextMenu(e.clientX, e.clientY, hit.colHeader && !hit.rowHeader ? 'column' : hit.rowHeader && !hit.colHeader ? 'row' : null);
       });
     });
     this.host.addEventListener('wheel', e => this.errorBoundary(() => { e.preventDefault(); if (this.editing) this.commitEdit(false); if (e.ctrlKey || e.metaKey) this.setZoom(this.renderer.zoom + (e.deltaY > 0 ? -.1 : .1)); else { const unit = e.deltaMode === 1 ? 25 : e.deltaMode === 2 ? this.renderer.height : 1; this.renderer.scrollY += e.shiftKey ? 0 : e.deltaY * unit; this.renderer.scrollX += e.shiftKey ? e.deltaY * unit : e.deltaX * unit; this.renderer.clampScroll(); this.renderer.requestFrame(); } }), { passive: false });
@@ -1562,6 +1574,9 @@ class GridlineApp {
         if (mod && e.key.startsWith('Arrow')) { const dest = this.jumpEdge(dr, dc); r = dest.r; c = dest.c; } else { const merge = this.sheet.mergeAt(r, c); if (merge) { if (dr > 0) r = merge.r2; if (dc > 0) c = merge.c2; } r += dr; c += dc; }
       }
       while (this.sheet.hiddenRows.has(r) && r >= 0 && r < MAX_ROWS) r += e.key === 'ArrowUp' || e.key === 'PageUp' ? -1 : 1;
+      const direction = e.key === 'ArrowLeft' || e.key === 'Tab' && e.shiftKey ? -1 : 1;
+      while (this.sheet.hiddenCols.has(c) && c >= 0 && c < MAX_COLS) c += direction;
+      if (c < 0 || c >= MAX_COLS) c = this.active.c;
       this.goto(r, c, e.shiftKey && !['Enter','Tab'].includes(e.key)); return;
     }
     if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); if (this.editable()) this.workbook.clear(this.sheet, this.selection); return; }
@@ -1594,11 +1609,11 @@ class GridlineApp {
     } else if (this.tab === 'Formulas') {
       html = group('Function library',tool('functions','Insert function','function',true)+tool('autosum','AutoSum','sum',true)) + group('Defined names',tool('name-manager','Name manager','name',true)) + group('Formula auditing',tool('show-formulas','Show formulas','function',true)+tool('inspect-formula','Inspect cell','search',true)) + group('Calculation',tool('recalculate','Calculate now','refresh',true));
     } else if (this.tab === 'Data') {
-      html = group('Get data',tool('open','From CSV / XLSX','open',true)+tool('export-csv','Export CSV','export',true)) + group('Sort & filter',tool('sort-asc','Sort A to Z','sort',true)+tool('sort-desc','Sort Z to A','sort',true)+tool('sort','Custom sort','table',true)+tool('filter','Filter','filter',true)+tool('clear-filter','Clear filters','clear',true)) + group('Data tools',tool('remove-duplicates','Remove duplicates','table',true)+tool('recalculate','Recalculate','refresh',true));
+      html = group('Get data',tool('open','From CSV / XLSX','open',true)+tool('export-csv','Export CSV','export',true)) + group('Sort & filter',tool('sort-asc','Sort A to Z','sort',true)+tool('sort-desc','Sort Z to A','sort',true)+tool('sort','Custom sort','table',true)+tool('filter','Filter','filter',true)+tool('clear-filter','Clear filters','clear',true)) + group('Data tools',tool('text-to-columns','Text to Columns','table',true)+tool('remove-duplicates','Remove duplicates','table',true)+tool('recalculate','Recalculate','refresh',true));
     } else if (this.tab === 'Review') {
       html = group('Notes',tool('add-note','New note','comment',true)+tool('notes','Show all notes','comment',true)) + group('Protection',tool('protect',this.sheet.protected ? 'Enable editing' : 'Read-only sheet','lock',true)) + group('Workbook',tool('inspect-formula','Inspect active cell','search',true)+tool('about','About Gridline','info',true));
     } else if (this.tab === 'View') {
-      html = group('Show',tool('toggle-gridlines','Gridlines','grid',true)+tool('show-formulas','Formulas','function',true)+tool('theme','Light / dark','moon',true)) + group('Zoom',tool('zoom-in','Zoom in','search',true)+tool('zoom-out','Zoom out','search',true)+tool('zoom-reset','100%','grid',true)) + group('Window',tool('freeze','Freeze panes','freeze',true)+tool('freeze-top','Freeze top row','table',true)+tool('freeze-first','Freeze first column','table',true)+tool('unfreeze','Unfreeze panes','clear',true)) + group('Engine',tool('performance','Performance','grid',true));
+      html = group('Show',tool('toggle-gridlines','Gridlines','grid',true)+tool('show-formulas','Formulas','function',true)+tool('theme','Light / dark','moon',true)) + group('Zoom',tool('zoom-in','Zoom in','search',true)+tool('zoom-out','Zoom out','search',true)+tool('zoom-reset','100%','grid',true)) + group('Columns',tool('hide-columns','Hide columns','table',true)+tool('unhide-columns','Unhide columns','table',true)+tool('unhide-all-columns','Unhide all','table',true)) + group('Window',tool('freeze','Freeze panes','freeze',true)+tool('freeze-top','Freeze top row','table',true)+tool('freeze-first','Freeze first column','table',true)+tool('unfreeze','Unfreeze panes','clear',true)) + group('Engine',tool('performance','Performance','grid',true));
     } else html = group('Get started',tool('help','Keyboard shortcuts','info',true)+tool('commands','Find a command','search',true)+tool('sample','Load demo workbook','table',true)) + group('Gridline',tool('about','About & limitations','info',true)+tool('performance','Engine diagnostics','grid',true));
     $('#ribbon').innerHTML = html;
     $('#font-family')?.addEventListener('change', e => this.errorBoundary(() => this.format({ fontFamily: e.target.value })));
@@ -1610,7 +1625,7 @@ class GridlineApp {
     $('#sheet-tabs').innerHTML = this.workbook.sheets.map(s => `<button class="sheet-tab ${s.id === this.sheet.id ? 'selected' : ''}" data-sheet="${escapeHTML(s.id)}" title="Double-click to rename · Right-click for options"><span class="sheet-tab-dot" style="background:${/^#[0-9a-f]{6}$/i.test(s.color) ? s.color : '#18835a'}"></span>${escapeHTML(s.name)}</button>`).join('');
   }
   switchSheet(id) {
-    if (id === this.sheet.id) return; this.commitEdit(false); this.commitFormula(); this.sheetViews.set(this.sheet.id, { selection: { ...this.selection }, active: { ...this.active }, scrollX: this.renderer.scrollX, scrollY: this.renderer.scrollY });
+    if (id === this.sheet.id) return; if (this.panelType === 'find') this.closePanel(); this.commitEdit(false); this.commitFormula(); this.sheetViews.set(this.sheet.id, { selection: { ...this.selection }, active: { ...this.active }, scrollX: this.renderer.scrollX, scrollY: this.renderer.scrollY });
     this.workbook.activeSheetId = id; const view = this.sheetViews.get(id); this.renderer.scrollX = view?.scrollX ?? 0; this.renderer.scrollY = view?.scrollY ?? 0; this.renderer.copyRange = null; this.renderer.syncLayout(); this.anchor = view?.active || { r: 0, c: 0 }; this.select(view?.selection || normalizedRange(this.anchor), this.anchor, false); this.renderTabs(); this.renderCharts(); if (this.panelType === 'notes') this.showNotes(); this.host.focus();
   }
   setZoom(zoom) { this.renderer.setZoom(Math.round(zoom * 10) / 10); $('#zoom-value').textContent = Math.round(this.renderer.zoom * 100) + '%'; $('#zoom-slider').value = this.renderer.zoom * 100; this.positionCharts(); }
@@ -1661,7 +1676,7 @@ class GridlineApp {
   }
   async run(action, element = null) {
     if (!['cancel-edit','commit-edit','close-dialog'].includes(action)) { this.commitEdit(false); this.commitFormula(); }
-    const style = this.sheet.style(this.active.r, this.active.c);
+    const style = this.sheet.style(this.active.r, this.active.c), q = this.selection;
     if (['bold','italic','underline','wrap'].includes(action)) return this.format({ [action]: !style[action] });
     if (action.startsWith('align-')) return this.format({ align: action.slice(6) });
     switch (action) {
@@ -1694,6 +1709,16 @@ class GridlineApp {
       case 'style-heading': return this.format({ fill:'#176b4a', color:'#ffffff', bold:true });
       case 'style-warning': return this.format({ fill:'#fff0d4', color:'#8d6224' });
       case 'merge': return this.mergeSelection();
+      case 'text-to-columns': return this.showTextToColumns();
+      case 'hide-columns': case 'unhide-columns': case 'unhide-all-columns':
+        if (!this.editable()) return;
+        if (action === 'hide-columns' && new Set([...this.sheet.hiddenCols, ...Array.from({length:q.c2-q.c1+1},(_,i)=>q.c1+i)]).size === MAX_COLS) throw new Error('Keep at least one column visible.');
+        this.workbook.mutate(action === 'hide-columns' ? 'Hide columns' : 'Unhide columns', () => {
+          if (action === 'unhide-all-columns') this.sheet.hiddenCols.clear();
+          else for (let c=q.c1;c<=q.c2;c++) this.sheet.hiddenCols[action === 'hide-columns' ? 'add' : 'delete'](c);
+        });
+        if (this.sheet.hiddenCols.has(this.active.c)) { let c=this.active.c; while(c<MAX_COLS-1 && this.sheet.hiddenCols.has(c)) c++; while(this.sheet.hiddenCols.has(c)) c--; this.goto(this.active.r,c); }
+        return;
       case 'auto-fit': return this.autoFit();
       case 'format-table': return this.formatTable();
       case 'conditional': return this.showConditional();
@@ -1834,7 +1859,7 @@ class GridlineApp {
     menu.onclick = () => menu.hidden = true;
   }
   menuAt(element, entries) { const box = element?.getBoundingClientRect(); this.contextMenu(box?.left ?? 200, box?.bottom ?? 200, entries); }
-  cellContextMenu(x, y) { this.contextMenu(x,y,[['cut','Cut','Ctrl/⌘ X'],['copy','Copy','Ctrl/⌘ C'],['paste','Paste','Ctrl/⌘ V'],null,['insert-row','Insert row above'],['insert-column','Insert column left'],['delete-row','Delete row'],['delete-column','Delete column'],null,['clear','Clear contents','Delete'],['format-cells','Format cells…','Ctrl/⌘ 1'],['auto-fit','Auto-fit columns'],['add-note','Add / edit note'],['inspect-formula','Inspect cell'],null,['filter','Filter values…']]); }
+  cellContextMenu(x, y, header = null) { this.contextMenu(x,y,[['cut','Cut','Ctrl/⌘ X'],['copy','Copy','Ctrl/⌘ C'],['paste','Paste','Ctrl/⌘ V'],null,['insert-row','Insert row above'],['insert-column','Insert column left'],['delete-row','Delete row'],['delete-column','Delete column'],null,['clear','Clear contents','Delete'],['format-cells','Format cells…','Ctrl/⌘ 1'],['auto-fit','Auto-fit columns'],['hide-columns','Hide columns'],['unhide-columns','Unhide columns'],['unhide-all-columns','Unhide all columns'],['add-note','Add / edit note'],['inspect-formula','Inspect cell'],null,['filter','Filter values…']].filter(entry => !entry || (!header || !entry[0].startsWith('insert-') && !entry[0].startsWith('delete-') || entry[0].endsWith(header)) && (header !== 'row' || entry[0] !== 'auto-fit') && (!['hide-columns','unhide-columns','unhide-all-columns'].includes(entry[0]) || header === 'column'))); }
   showFile() {
     const card=(action,title,desc,image)=>`<button class="file-card" data-action="${action}">${icon(image)}<span><strong>${title}</strong><small>${desc}</small></span></button>`;
     this.openDialog('Your workspace', `<div class="file-hero"><div class="eyebrow">GRIDLINE / LOCAL FIRST</div><h3>Big ideas.<br>Beautifully organized.</h3><p>A spreadsheet that gives your numbers room to make sense.</p></div><div class="dialog-grid">${card('new','Blank workbook','Start with a clean sheet.','file')}${card('open','Open a workbook','Gridline, XLSX, CSV or TSV.','open')}${card('save','Save a copy','Preserve every Gridline feature.','save')}${card('export','Export your work','Excel workbook or CSV values.','export')}${card('sample','Explore the demo','A fictional revenue operations model.','table')}${card('help','Make yourself at home','Shortcuts, formulas and editing tips.','info')}</div><p class="help-text" style="margin:20px 0 0">No account. No uploads. Workbook data is processed in your browser. Local autosave is specific to this browser and site.</p>`, 620);
@@ -1848,11 +1873,45 @@ class GridlineApp {
     $$('[data-rule]').forEach(button => button.onclick = () => this.errorBoundary(() => { const range = {...this.selection}; [...cellsIn(range)]; const rule={type:button.dataset.rule,range,value:Number($('#cf-threshold').value)}; this.workbook.mutate('Conditional formatting',()=>this.sheet.conditionalRules.push(rule)); this.closeDialog(); }));
     $('#clear-rules').onclick=()=>{this.workbook.mutate('Clear conditional rules',()=>this.sheet.conditionalRules=[]);this.closeDialog();};
   }
+  showTextToColumns() {
+    if (!this.editable()) return;
+    const sheet = this.sheet, q = {...this.selection};
+    if (q.c1 !== q.c2) throw new Error('Select one column to split.');
+    if (q.r1 === q.r2) q.r2 = this.dataRange().r2;
+    q.r2 = Math.min(q.r2, sheet.usedRange().r2);
+    if (q.r2 < q.r1 || q.r2-q.r1+1 > MAX_RANGE_CELLS) throw new Error('Select up to 200,000 source cells.');
+    this.openDialog('Text to Columns', `<p class="help-text">Split ${rangeAddress(q)} using a delimiter. Double quotes qualify text. Formula results are converted to values.</p><label class="field-label" for="split-delimiter">Delimiter</label><select id="split-delimiter" class="dialog-input"><option value=",">Comma</option><option value="tab">Tab</option><option value=";">Semicolon</option><option value=" ">Space</option><option value="other">Other</option></select><input id="split-other" class="dialog-input" aria-label="Other delimiter" maxlength="1" placeholder="Custom delimiter" hidden><label class="field-label" for="split-destination">Destination</label><input id="split-destination" class="dialog-input" value="${address(q.r1,q.c1)}"><label class="field-label" for="split-format">Output format</label><select id="split-format" class="dialog-input"><option value="general">General</option><option value="text">Text (keep leading zeros)</option></select><label class="field-label">Preview (first 5 rows)</label><div id="split-preview" style="overflow:auto;max-height:180px"></div><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Cancel</button><button id="split-apply" class="primary-btn">Finish</button></div>`,620);
+    const read = (limit = q.r2) => {
+      const delimiter = $('#split-delimiter').value === 'tab' ? '\t' : $('#split-delimiter').value === 'other' ? $('#split-other').value : $('#split-delimiter').value;
+      if (delimiter.length !== 1) throw new Error('Enter one delimiter character.');
+      const rows = [];
+      for (let r=q.r1;r<=limit;r++) {
+        const value = this.workbook.value(sheet,r,q.c1);
+        const parsed = parseDelimited(String(value ?? ''),delimiter);
+        if (parsed.length !== 1) throw new Error('Line breaks inside a source cell must be enclosed in double quotes.');
+        rows.push(parsed[0]);
+      }
+      return rows;
+    };
+    const preview = () => { $('#split-other').hidden = $('#split-delimiter').value !== 'other'; try { $('#split-preview').innerHTML='<table>'+read(Math.min(q.r2,q.r1+4)).map(row=>'<tr>'+row.map(v=>`<td style="border:1px solid #ccc;padding:6px">${escapeHTML(v)}</td>`).join('')+'</tr>').join('')+'</table>'; } catch(e) { $('#split-preview').textContent=e.message; } };
+    $('#split-delimiter').onchange=preview; $('#split-other').oninput=preview; preview();
+    $('#split-apply').onclick=()=>this.errorBoundary(()=>{
+      const rows=read(), dest=parseAddress($('#split-destination').value.trim()), width=rows.reduce((n,row)=>Math.max(n,row.length),0), text=$('#split-format').value==='text';
+      if (!dest || dest.r+rows.length>MAX_ROWS || dest.c+width>MAX_COLS || rows.length*width>MAX_RANGE_CELLS) throw new Error('Destination must fit within the sheet and the 200,000-cell limit.');
+      const target={r1:dest.r,c1:dest.c,r2:dest.r+rows.length-1,c2:dest.c+width-1};
+      if (sheet.merges.some(m=>m.r1<=target.r2 && m.r2>=target.r1 && m.c1<=target.c2 && m.c2>=target.c1)) throw new Error('Unmerge destination cells before splitting.');
+      let overwrite=false;
+      for(const {r,c} of cellsIn(target)) if(sheet.raw(r,c) && !(c===q.c1 && r>=q.r1 && r<=q.r2)) overwrite=true;
+      const apply=()=>{this.workbook.transaction('Text to Columns',()=>rows.forEach((row,i)=>{for(let j=0;j<width;j++){const raw=row[j]??'';this.workbook.setCell(sheet,dest.r+i,dest.c+j,{raw:raw && (text || raw.startsWith('=') || raw.startsWith("'")) ? "'"+raw : raw,style:{format:text?'text':'general',decimals:null}});}}));this.closeDialog();this.select(target,dest,true);};
+      if(overwrite) this.confirm('Replace destination data?', `Text to Columns will overwrite existing data in ${rangeAddress(target)}.`,apply,'Replace data'); else apply();
+    });
+  }
   showSort() {
     if(!this.editable())return;const q=this.dataRange();if(q.r2<=q.r1){this.toast('Select a table or range with data rows.');return;}
     const options=[];for(let c=q.c1;c<=q.c2;c++)options.push(`<option value="${c}"${c===this.active.c?' selected':''}>${colName(c)} — ${escapeHTML(this.workbook.display(this.sheet,q.r1,c))}</option>`);
-    this.openDialog('Sort range',`<p class="help-text">Sort complete rows in <b>${rangeAddress(q)}</b>. Formula references move relative to their cells.</p><label class="field-label">Sort by column</label><select id="sort-column" class="dialog-input">${options.join('')}</select><label class="field-label">Order</label><select id="sort-order" class="dialog-input"><option value="asc">A to Z / Smallest to largest</option><option value="desc">Z to A / Largest to smallest</option></select><p><label><input type="checkbox" id="sort-header" checked> My data has headers</label></p><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Cancel</button><button id="sort-apply" class="primary-btn">Sort range</button></div>`);
-    $('#sort-apply').onclick=()=>this.errorBoundary(()=>{this.workbook.sort(this.sheet,q,+$('#sort-column').value,$('#sort-order').value==='desc',$('#sort-header').checked);this.closeDialog();});
+    this.openDialog('Sort range',`<p class="help-text">Sort complete rows in <b>${rangeAddress(q)}</b>. Formula references move relative to their cells.</p><div id="sort-levels"><div class="sort-level"><label class="field-label">Sort by column</label><select id="sort-column" class="dialog-input">${options.join('')}</select><label class="field-label">Order</label><select id="sort-order" class="dialog-input"><option value="asc">A to Z / Smallest to largest</option><option value="desc">Z to A / Largest to smallest</option></select></div></div><button id="sort-add" class="secondary-btn">Add level</button><p><label><input type="checkbox" id="sort-header" checked> My data has headers</label></p><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Cancel</button><button id="sort-apply" class="primary-btn">Sort range</button></div>`);
+    $('#sort-add').onclick=()=>{ const row=document.createElement('div'); row.className='sort-level'; row.innerHTML=`<label class="field-label">Then by</label><select class="dialog-input">${options.join('')}</select><select class="dialog-input"><option value="asc">A to Z / Smallest to largest</option><option value="desc">Z to A / Largest to smallest</option></select><button class="secondary-btn" type="button">Delete level</button>`; row.querySelector('button').onclick=()=>row.remove(); $('#sort-levels').append(row); };
+    $('#sort-apply').onclick=()=>this.errorBoundary(()=>{this.workbook.sort(this.sheet,q,$$('.sort-level').map(row=>({column:+row.querySelectorAll('select')[0].value,descending:row.querySelectorAll('select')[1].value==='desc'})),false,$('#sort-header').checked);this.closeDialog();});
   }
   showFilter() {
     const q=this.dataRange();if(q.r2<=q.r1){this.toast('Select a table with a header row to filter.');return;}
@@ -1894,12 +1953,15 @@ class GridlineApp {
   openPanel(type,title,body) {this.panelType=type;const panel=$('#side-panel');panel.hidden=false;panel.innerHTML=`<div class="panel-heading"><span>${title}</span><button data-action="close-panel" aria-label="Close panel">×</button></div>${body}`;this.renderer.resize();}
   closePanel() {this.panelType=null;$('#side-panel').hidden=true;this.renderer.resize();this.host.focus();}
   showFind() {
-    this.openPanel('find','Find & replace',`<label class="field-label">Find in this sheet</label><input id="find-query" class="panel-input" placeholder="Search values and formulas…"><label class="field-label">Replace with</label><input id="replace-query" class="panel-input" placeholder="Replacement text"><div class="panel-actions"><button class="primary-btn" id="find-next">Find next</button><button class="secondary-btn" id="replace-all">Replace all</button></div><p class="help-text">Search matches displayed values and original input. Replace edits original input, including formulas. Results are limited to 200.</p><div id="find-count" class="badge">Enter a search term</div><div class="result-list" id="find-results"></div>`);
+    const scope = {...this.selection}, column = this.active.c, sheetId = this.sheet.id;
+    const includes = (r,c) => this.sheet.id === sheetId && ($('#find-scope').value === 'sheet' || ($('#find-scope').value === 'column' ? c === column : r >= scope.r1 && r <= scope.r2 && c >= scope.c1 && c <= scope.c2));
+    this.openPanel('find','Find & replace',`<label class="field-label" for="find-scope">Within</label><select id="find-scope" class="panel-input"><option value="sheet">Sheet</option><option value="column">Column ${colName(column)}</option><option value="selection">Selection ${rangeAddress(scope)}</option></select><label class="field-label">Find</label><input id="find-query" class="panel-input" placeholder="Search values and formulas…"><label class="field-label">Replace with</label><input id="replace-query" class="panel-input" placeholder="Replacement text"><div class="panel-actions"><button class="primary-btn" id="find-next">Find next</button><button class="secondary-btn" id="replace-all">Replace all</button></div><p class="help-text">Search matches displayed values and original input. Replace edits original input, including formulas. Replace is case-sensitive. The scope stays fixed while navigating results. Results are limited to 200; Replace all processes every match in scope.</p><div id="find-count" class="badge">Enter a search term</div><div class="result-list" id="find-results"></div>`);
     let matches=[],next=-1;
-    const search=()=>{const query=$('#find-query').value.toLowerCase();matches=[];if(query)for(const [key,cell]of this.sheet.cells){const [r,c]=key.split(',').map(Number);const display=this.workbook.display(this.sheet,r,c);if(cell.raw.toLowerCase().includes(query)||display.toLowerCase().includes(query)){matches.push({r,c,display});if(matches.length>=200)break;}}matches.sort((a,b)=>a.r-b.r||a.c-b.c);next=-1;$('#find-count').textContent=query?`${matches.length}${matches.length===200?'+':''} matches`:'Enter a search term';$('#find-results').innerHTML=matches.map((m,i)=>`<button class="find-result" data-result="${i}"><b>${address(m.r,m.c)}</b><span>${escapeHTML(m.display.slice(0,120))}</span></button>`).join('');$$('[data-result]').forEach(b=>b.onclick=()=>{const m=matches[+b.dataset.result];this.goto(m.r,m.c);});};
+    const search=()=>{const query=$('#find-query').value.toLowerCase();matches=[];if(query)for(const [key,cell]of this.sheet.cells){const [r,c]=key.split(',').map(Number);if(!includes(r,c))continue;const display=this.workbook.display(this.sheet,r,c);if(cell.raw.toLowerCase().includes(query)||display.toLowerCase().includes(query)){matches.push({r,c,display});if(matches.length>=200)break;}}matches.sort((a,b)=>a.r-b.r||a.c-b.c);next=-1;$('#find-count').textContent=query?`${matches.length}${matches.length===200?'+':''} matches`:'Enter a search term';$('#find-results').innerHTML=matches.map((m,i)=>`<button class="find-result" data-result="${i}"><b>${address(m.r,m.c)}</b><span>${escapeHTML(m.display.slice(0,120))}</span></button>`).join('');$$('[data-result]').forEach(b=>b.onclick=()=>{const m=matches[+b.dataset.result];this.goto(m.r,m.c);});};
+    $('#find-scope').value = scope.r1 !== scope.r2 || scope.c1 !== scope.c2 ? 'selection' : 'sheet'; $('#find-scope').onchange=search;
     $('#find-query').oninput=search;$('#find-next').onclick=()=>{if(matches.length){const m=matches[++next%matches.length];this.goto(m.r,m.c);}};
     $('#find-query').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('#find-next').click();}};
-    $('#replace-all').onclick=()=>this.errorBoundary(()=>{if(!this.editable())return;const query=$('#find-query').value,replace=$('#replace-query').value;if(!query)return;let count=0;this.workbook.transaction('Replace all',()=>{for(const [key,cell]of this.sheet.cells){if(!cell.raw.includes(query))continue;const [r,c]=key.split(',').map(Number);this.workbook.setRaw(this.sheet,r,c,cell.raw.split(query).join(replace));count++;}});this.toast(`Replaced exact, case-sensitive matches in ${count} cells.`);search();});$('#find-query').focus();
+    $('#replace-all').onclick=()=>this.errorBoundary(()=>{if(!this.editable())return;const query=$('#find-query').value,replace=$('#replace-query').value;if(!query)return;let count=0;this.workbook.transaction('Replace all',()=>{for(const [key,cell]of this.sheet.cells){if(!cell.raw.includes(query))continue;const [r,c]=key.split(',').map(Number);if(!includes(r,c))continue;this.workbook.setRaw(this.sheet,r,c,cell.raw.split(query).join(replace));count++;}});this.toast(`Replaced exact, case-sensitive matches in ${count} cells.`);search();});$('#find-query').focus();
   }
   showNotes() {
     const notes=[];for(const [key,cell]of this.sheet.cells)if(cell.note){const[r,c]=key.split(',').map(Number);notes.push({r,c,text:cell.note});}
@@ -1976,7 +2038,7 @@ class GridlineApp {
   }
   printSheet(selected=false) {
     this.closeDialog();const q=selected?this.selection:this.sheet.usedRange();if((q.r2-q.r1+1)*(q.c2-q.c1+1)>10000)throw new Error('Print supports at most 10,000 cells. Select a smaller range.');
-    let rows='';for(let r=q.r1;r<=q.r2;r++){if(this.sheet.hiddenRows.has(r))continue;let cells='';for(let c=q.c1;c<=q.c2;c++){const merge=this.sheet.mergeAt(r,c);if(merge&&(r!==merge.r1||c!==merge.c1))continue;const style=this.sheet.style(r,c);const safeColor=color=>/^#[0-9a-f]{6}$/i.test(color)?color:'inherit';cells+=`<td${merge?` rowspan="${Math.min(merge.r2,q.r2)-r+1}" colspan="${Math.min(merge.c2,q.c2)-c+1}"`:''} style="background:${safeColor(style.fill)};color:${safeColor(style.color)};font-weight:${style.bold?'bold':'normal'};text-align:${['left','center','right'].includes(style.align)?style.align:typeof this.workbook.value(this.sheet,r,c)==='number'?'right':'left'}">${escapeHTML(this.workbook.display(this.sheet,r,c))}</td>`;}rows+='<tr>'+cells+'</tr>';}
+    let rows='';for(let r=q.r1;r<=q.r2;r++){if(this.sheet.hiddenRows.has(r))continue;let cells='';for(let c=q.c1;c<=q.c2;c++){if(this.sheet.hiddenCols.has(c))continue;const merge=this.sheet.mergeAt(r,c);if(merge&&(r!==merge.r1||c!==merge.c1))continue;const style=this.sheet.style(r,c);const safeColor=color=>/^#[0-9a-f]{6}$/i.test(color)?color:'inherit';cells+=`<td${merge?` rowspan="${Math.min(merge.r2,q.r2)-r+1}" colspan="${Math.min(merge.c2,q.c2)-c+1}"`:''} style="background:${safeColor(style.fill)};color:${safeColor(style.color)};font-weight:${style.bold?'bold':'normal'};text-align:${['left','center','right'].includes(style.align)?style.align:typeof this.workbook.value(this.sheet,r,c)==='number'?'right':'left'}">${escapeHTML(this.workbook.display(this.sheet,r,c))}</td>`;}rows+='<tr>'+cells+'</tr>';}
     $('#print-area').innerHTML=`<h1>${escapeHTML(this.workbook.title)}</h1><p class="print-meta">${escapeHTML(this.sheet.name)} · ${rangeAddress(q)} · Printed from Gridline</p><table>${rows}</table>`;window.print();
   }
 }

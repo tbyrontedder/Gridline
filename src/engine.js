@@ -488,8 +488,8 @@ let nextSheetId = 1;
 export class Sheet {
   constructor(name = 'Sheet1', data = null) {
     this.id = `s${Date.now().toString(36)}${nextSheetId++}`; this.name = name; this.cells = new Map(); this.colWidths = new Map(); this.rowHeights = new Map(); this.colStyles = new Map(); this.rowStyles = new Map();
-    this.merges = []; this.conditionalRules = []; this.hiddenRows = new Set(); this.filters = null; this.freezeRows = 0; this.freezeCols = 0; this.charts = []; this.gridlines = true; this.color = '#18835a'; this.revision = 0; this._used = null;
-    if (data) { for (const prop of ['id','name','merges','conditionalRules','filters','freezeRows','freezeCols','charts','gridlines','color','revision','protected','dataRegion']) if (Object.hasOwn(data, prop)) this[prop] = data[prop]; this.colStyles = new Map(data.colStyles ?? []); this.rowStyles = new Map(data.rowStyles ?? []); this.cells = new Map(data.cells ?? []); this.colWidths = new Map(data.colWidths ?? []); this.rowHeights = new Map(data.rowHeights ?? []); this.hiddenRows = new Set(data.hiddenRows ?? []); this._used = null; }
+    this.merges = []; this.conditionalRules = []; this.hiddenCols = new Set(); this.hiddenRows = new Set(); this.filters = null; this.freezeRows = 0; this.freezeCols = 0; this.charts = []; this.gridlines = true; this.color = '#18835a'; this.revision = 0; this._used = null;
+    if (data) { for (const prop of ['id','name','merges','conditionalRules','filters','freezeRows','freezeCols','charts','gridlines','color','revision','protected','dataRegion']) if (Object.hasOwn(data, prop)) this[prop] = data[prop]; this.colStyles = new Map(data.colStyles ?? []); this.rowStyles = new Map(data.rowStyles ?? []); this.cells = new Map(data.cells ?? []); this.colWidths = new Map(data.colWidths ?? []); this.rowHeights = new Map(data.rowHeights ?? []); this.hiddenRows = new Set(data.hiddenRows ?? []); this.hiddenCols = new Set(data.hiddenCols ?? []); this._used = null; }
   }
   get(r, c) { return this.cells.get(keyOf(r, c)); }
   style(r, c) { return { ...this.colStyles.get(c), ...this.rowStyles.get(r), ...this.get(r, c)?.style }; }
@@ -501,7 +501,7 @@ export class Sheet {
   }
   mergeAt(r, c) { return this.merges.find(q => r >= q.r1 && r <= q.r2 && c >= q.c1 && c <= q.c2); }
   toJSON() {
-    const { _used, ...rest } = this; return { ...rest, cells: [...this.cells], colStyles: [...this.colStyles], rowStyles: [...this.rowStyles], colWidths: [...this.colWidths], rowHeights: [...this.rowHeights], hiddenRows: [...this.hiddenRows] };
+    const { _used, ...rest } = this; return { ...rest, cells: [...this.cells], colStyles: [...this.colStyles], rowStyles: [...this.rowStyles], colWidths: [...this.colWidths], rowHeights: [...this.rowHeights], hiddenCols: [...this.hiddenCols], hiddenRows: [...this.hiddenRows] };
   }
 }
 export class Workbook {
@@ -641,6 +641,7 @@ export class Workbook {
       for (const [key, cell] of sheet.cells) { const p = key.split(',').map(Number); if (delta < 0 && p[coord] === at) continue; if (p[coord] >= at) p[coord] += delta; if (p[coord] < limit) next.set(keyOf(...p), cell); }
       sheet.cells = next;
       for (const prop of axis === 'row' ? ['rowHeights','rowStyles'] : ['colWidths','colStyles']) { const mapped = new Map(); for (const [i, value] of sheet[prop]) { if (delta < 0 && i === at) continue; const n = i >= at ? i + delta : i; if (n < limit) mapped.set(n, value); } sheet[prop] = mapped; }
+      if (axis === 'column') sheet.hiddenCols = new Set([...sheet.hiddenCols].filter(i => !(delta < 0 && i === at)).map(i => i >= at ? i + delta : i).filter(i => i < MAX_COLS));
       sheet.hiddenRows.clear(); sheet.filters = null; sheet.dataRegion = null;
       const a = axis === 'row' ? 'r1' : 'c1', b = axis === 'row' ? 'r2' : 'c2';
       sheet.merges = sheet.merges.filter(q => !(delta < 0 && q[a] === at && q[b] === at)).map(q => { const n = { ...q }; if (delta > 0) { if (n[a] >= at) n[a]++; if (n[b] >= at) n[b]++; } else { if (n[a] > at) n[a]--; if (n[b] >= at) n[b]--; } return n; });
@@ -651,9 +652,20 @@ export class Workbook {
     });
   }
   sort(sheet, q, column, descending = false, header = true) {
+    const levels = Array.isArray(column) ? column : [{ column, descending }];
+    if (!levels.length || levels.some(l => !Number.isInteger(l.column) || l.column < q.c1 || l.column > q.c2)) throw new Error('Choose a sort column inside the range.');
+    if ((q.r2-q.r1+1)*(q.c2-q.c1+1) > MAX_RANGE_CELLS) throw new Error('Sort is limited to 200,000 cells.');
+    if (sheet.merges.some(m => m.r1 <= q.r2 && m.r2 >= q.r1 && m.c1 <= q.c2 && m.c2 >= q.c1)) throw new Error('Unmerge cells before sorting this range.');
     const first = q.r1 + (header ? 1 : 0); if (first > q.r2) return;
-    const rows = []; for (let r = first; r <= q.r2; r++) rows.push({ r, value: this.value(sheet, r, column), cells: Array.from({ length: q.c2 - q.c1 + 1 }, (_, i) => clone(sheet.get(r, q.c1 + i) ?? { raw: '' })) });
-    rows.sort((a, b) => { if (a.value == null) return b.value == null ? a.r - b.r : 1; if (b.value == null) return -1; return (compare(a.value instanceof FormulaError ? a.value.code : a.value, b.value instanceof FormulaError ? b.value.code : b.value) * (descending ? -1 : 1)) || a.r - b.r; });
+    const rows = []; for (let r = first; r <= q.r2; r++) rows.push({ r, values: levels.map(l => this.value(sheet, r, l.column)), cells: Array.from({ length: q.c2 - q.c1 + 1 }, (_, i) => clone(sheet.get(r, q.c1 + i) ?? { raw: '' })) });
+    rows.sort((a, b) => {
+      for (let i = 0; i < levels.length; i++) {
+        const av = a.values[i], bv = b.values[i];
+        const order = av == null ? (bv == null ? 0 : 1) : bv == null ? -1 : compare(av instanceof FormulaError ? av.code : av, bv instanceof FormulaError ? bv.code : bv) * (levels[i].descending ? -1 : 1);
+        if (order) return order;
+      }
+      return a.r - b.r;
+    });
     this.transaction('Sort range', () => rows.forEach((row, i) => row.cells.forEach((cell, j) => { cell.raw = shiftFormula(cell.raw, first + i - row.r, 0); this.setCell(sheet, first + i, q.c1 + j, cell); })));
   }
 }

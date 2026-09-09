@@ -160,3 +160,21 @@ test('native import retains supported decimal settings and older styles without 
     assert.equal(sheet.get(0,0).style.decimals,decimals); assert.equal(sheet.rowStyles.get(1).decimals,decimals); assert.equal(sheet.colStyles.get(1).decimals,decimals);
   }
 });
+
+test('multi-level sort resolves ties in priority order, keeps blanks last, and undoes',()=>{
+  const w=make(),s=w.activeSheet;
+  [['Team','Score','ID'],['B','2','one'],['A','1','two'],['A','3','three'],['A','3','four'],['A','','five']].forEach((row,r)=>row.forEach((v,c)=>w.setRaw(s,r,c,v)));
+  w.sort(s,parseRange('A1:C6'),[{column:0,descending:false},{column:1,descending:true}],false,true);
+  assert.deepEqual([1,2,3,4,5].map(r=>s.raw(r,2)),['three','four','two','five','one']);
+  w.undo();assert.equal(s.raw(1,2),'one');w.redo();assert.equal(s.raw(1,2),'three');
+});
+test('hidden columns preserve widths, persist, and track structural edits',()=>{
+  const w=make(),s=w.activeSheet;s.colWidths.set(1,150);
+  w.mutate('Hide columns',()=>s.hiddenCols.add(1));
+  const restored=Workbook.fromJSON(JSON.parse(JSON.stringify(w.toJSON()))).activeSheet;
+  assert.deepEqual([...restored.hiddenCols],[1]);assert.equal(restored.colWidths.get(1),150);
+  const axis=new AxisLayout(MAX_COLS,106,restored.colWidths,restored.hiddenCols);
+  assert.equal(axis.size(1),0);assert.equal(axis.find(106),2);
+  w.structuralEdit(s,'column',0,1);assert.deepEqual([...s.hiddenCols],[2]);
+  w.undo();assert.deepEqual([...w.activeSheet.hiddenCols],[1]);w.undo();assert.equal(w.activeSheet.hiddenCols.size,0);
+});

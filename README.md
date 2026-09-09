@@ -152,3 +152,12 @@ Original implementation, MIT licensed. No Microsoft code, Office assets, proprie
 - SpreadsheetML document structure: https://learn.microsoft.com/en-us/office/open-xml/spreadsheet/structure-of-a-spreadsheetml-document
 - Shared string tables: https://learn.microsoft.com/en-us/office/open-xml/spreadsheet/working-with-the-shared-string-table
 - CI actions: https://github.com/actions/checkout, https://github.com/actions/setup-node, https://github.com/actions/upload-artifact
+
+### Column and data tools
+
+- **Hide / Unhide columns:** right-click selected column headers, or use View → Columns. Select the columns on either side of a hidden span to unhide it, or choose Unhide all. Column widths and data are preserved, including through Gridline and XLSX saves.
+- **Text to Columns:** select one column or a range within it, then Data → Text to Columns. Choose comma, tab, semicolon, space, or a custom delimiter, inspect the preview, and choose a destination. Text mode preserves leading zeros. Existing destination data requires confirmation. This version supports delimited text with double-quoted fields, not fixed-width splitting. Formula results become values.
+- **Find & replace:** choose Sheet, Column, or Selection in the Within control. A selected range is the default scope and stays fixed while navigating results. Replacement retains the existing case-sensitive behavior and processes all matches in scope, even beyond the 200-result display limit.
+- **Custom sort:** Data → Custom sort → Add level adds successive tie-breakers, each with its own direction. Levels apply from top to bottom; Delete level removes a secondary level. Choose whether the first row contains headers. Select the entire table to keep its row data together.
+
+All four editing operations support Undo / Redo.

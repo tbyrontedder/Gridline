@@ -5,7 +5,7 @@
     "backend": "canvas2d",
     "reason": "WebGPU is not exposed by this browser."
   },
-  "passed": 45,
+  "passed": 54,
   "checks": [
     {
       "name": "Standalone app boots without an uncaught exception",
@@ -167,7 +167,7 @@
       "name": "Stress sheet creates 80,008 sparse cells",
       "passed": true,
       "detail": {
-        "wall_ms": 128.04
+        "wall_ms": 131.04
       }
     },
     {
@@ -183,7 +183,7 @@
       "passed": true,
       "detail": {
         "visibleCells": 576,
-        "lastFrameCPUms": 1.7000000476837158,
+        "lastFrameCPUms": 1.7999999523162842,
         "storedCells": 80008,
         "active": {
           "r": 10000,
@@ -364,6 +364,51 @@
       }
     },
     {
+      "name": "Custom sort applies secondary descending level",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Hide columns removes column from layout",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Unhide restores column width",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Column replacement keeps its scope after navigating a match",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Text to Columns splits rows and preserves leading zeros in Text mode",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Text to Columns undoes as one operation",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Text to Columns asks before replacing neighboring data",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Confirmed split writes to chosen destination",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "XLSX round-trip preserves hidden columns and widths",
+      "passed": true,
+      "detail": null
+    },
+    {
       "name": "Browser interactions produce no uncaught JavaScript errors",
       "passed": true,
       "detail": []
@@ -371,7 +416,7 @@
   ],
   "stressMetrics": {
     "visibleCells": 576,
-    "lastFrameCPUms": 1.7000000476837158,
+    "lastFrameCPUms": 1.7999999523162842,
     "storedCells": 80008,
     "active": {
       "r": 10000,
