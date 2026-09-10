@@ -394,6 +394,14 @@ with sync_playwright() as p:
     page.mouse.dblclick(host['x']+point['x']+point['w'],host['y']+12)
     check('Double-clicking selected column separator auto-fits all selected columns', page.evaluate('[2,3,4,5].every(c=>gridline.sheet.colWidths.has(c)) && gridline.sheet.colWidths.get(2)>gridline.sheet.colWidths.get(3) && !gridline.sheet.colWidths.has(6)'))
     check('Auto-fit preserves the whole-column selection', page.evaluate('gridline.selection.c1===2 && gridline.selection.c2===5 && gridline.selection.r2===1048575'))
+    font_fixture = io.BytesIO()
+    with zipfile.ZipFile(font_fixture, 'w') as z:
+        z.writestr('xl/workbook.xml', '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Fonts" r:id="r1"/></sheets></workbook>')
+        z.writestr('xl/_rels/workbook.xml.rels', '<Relationships><Relationship Id="r1" Target="worksheets/sheet1.xml"/><Relationship Id="r2" Target="styles.xml"/></Relationships>')
+        z.writestr('xl/styles.xml', '<styleSheet><fonts><font><b val="0"/><i val="false"/><u val="none"/></font><font><b val="1"/><i val="0"/><u val="none"/></font></fonts><cellXfs><xf fontId="0"/><xf fontId="1"/></cellXfs></styleSheet>')
+        z.writestr('xl/worksheets/sheet1.xml', '<worksheet><sheetData><row r="1"><c r="A1" s="1"><v>1</v></c></row><row r="2"><c r="A2" s="0"><v>2</v></c></row></sheetData></worksheet>')
+    font_flags = page.evaluate("""async b=>{const w=(await Gridline.importXLSX(Uint8Array.from(atob(b),c=>c.charCodeAt(0)))).workbook;return [w.activeSheet.style(0,0),w.activeSheet.style(1,0)];}""", base64.b64encode(font_fixture.getvalue()).decode())
+    check('XLSX honors explicit false font flags and underline none', font_flags[0]['bold'] and not font_flags[0]['italic'] and not font_flags[0]['underline'] and not font_flags[1]['bold'] and not font_flags[1]['italic'] and not font_flags[1]['underline'], font_flags)
     report={'harness':'served origin' if args.url else 'inline opaque origin, in-memory Storage fixture','browser':browser.version,'backend':backend,'passed':len(checks),'checks':checks,'stressMetrics':metrics,'uncaughtErrors':errors,'notes':['GPU execution is verified only when backend is webgpu.','CPU frame measurement is not GPU completion time or a cross-machine benchmark.','In-memory storage fixture does not validate real browser persistence.']}
     (ROOT/'docs/browser-test-results.json').write_text(json.dumps(report,indent=2))
     print(json.dumps({'passed':len(checks),'backend':backend,'stress':metrics},indent=2))

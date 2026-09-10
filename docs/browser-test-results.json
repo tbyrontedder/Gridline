@@ -5,7 +5,7 @@
     "backend": "canvas2d",
     "reason": "WebGPU is not exposed by this browser."
   },
-  "passed": 91,
+  "passed": 92,
   "checks": [
     {
       "name": "Standalone app boots without an uncaught exception",
@@ -177,7 +177,7 @@
       "name": "Stress sheet creates 80,008 sparse cells",
       "passed": true,
       "detail": {
-        "wall_ms": 132.89
+        "wall_ms": 127.03
       }
     },
     {
@@ -641,6 +641,32 @@
       "name": "Auto-fit preserves the whole-column selection",
       "passed": true,
       "detail": null
+    },
+    {
+      "name": "XLSX honors explicit false font flags and underline none",
+      "passed": true,
+      "detail": [
+        {
+          "decimals": null,
+          "pattern": null,
+          "currency": "USD",
+          "grouping": true,
+          "format": "general",
+          "bold": true,
+          "italic": false,
+          "underline": false
+        },
+        {
+          "decimals": null,
+          "pattern": null,
+          "currency": "USD",
+          "grouping": true,
+          "format": "general",
+          "bold": false,
+          "italic": false,
+          "underline": false
+        }
+      ]
     }
   ],
   "stressMetrics": {
