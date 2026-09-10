@@ -33,9 +33,9 @@ body.dark{--surface:#1b2820;--ribbon:#223027;--background:#1b2820;--ink:#dce8df;
 <header class="titlebar">
   <button class="brand" data-action="file" title="Gridline home"><span class="brand-mark"><i></i><i></i><i></i><i></i></span><span>Gridline</span></button>
   <span class="title-divider"></span>
-  <button class="autosave" id="autosave" data-action="autosave" title="Toggle local autosave">AutoSave <span class="toggle on" id="autosave-toggle"></span></button>
+  <button class="autosave" id="autosave" data-action="autosave" title="AutoSave keeps a recovery copy in this browser, not in a folder">AutoSave · Browser <span class="toggle on" id="autosave-toggle"></span></button>
   <div class="quick-actions"><button data-action="undo" title="Undo (Ctrl / ⌘ Z)" aria-label="Undo" data-icon="undo"></button><button data-action="redo" title="Redo (Ctrl / ⌘ Shift Z)" aria-label="Redo" data-icon="redo"></button></div>
-  <div class="document-title"><input id="workbook-title" aria-label="Workbook title" value="Revenue operations · FY2026"><span class="save-status" id="save-status">Saved on this device</span></div>
+  <div class="document-title"><input id="workbook-title" aria-label="Workbook title" value="Revenue operations · FY2026"><span class="save-status" id="save-status">Saved in this browser</span></div>
   <button class="global-search" data-action="commands"><span data-icon="search"></span><span>Search tools, actions, and help</span><kbd>⌘ K</kbd></button>
   <button class="avatar" data-action="about" title="About your local workspace">GL</button>
 </header>
@@ -1010,6 +1010,7 @@ class GridRenderer {
         const q = rule.range; if (r < q.r1 || r > q.r2 || c < q.c1 || c > q.c2) continue;
         if (rule.type === 'positive' && typeof value === 'number') { style.color = value >= 0 ? '#16815c' : '#c14944'; style.bold = true; }
         if (rule.type === 'greater' && typeof value === 'number' && value > rule.value) { style.fill = '#d9eee3'; style.color = '#166444'; }
+        if (rule.type === 'blank' && (value == null || value === '') || (rule.type === 'contains' || rule.type === 'not-contains') && value != null && value !== '' && !(value instanceof FormulaError) && String(value).toLowerCase().includes(String(rule.value).toLowerCase()) === (rule.type === 'contains')) { style.fill = '#d9eee3'; style.color = '#166444'; }
         if (rule.type === 'scale' && typeof value === 'number') {
           const stats = ruleStats.get(rule), t = stats.max === stats.min ? 0.5 : (value - stats.min) / (stats.max - stats.min);
           style.fill = '#' + [Math.round(243 - t * 74), Math.round(248 - t * 35), Math.round(241 - t * 52)].map(x => x.toString(16).padStart(2, '0')).join('');
@@ -1460,13 +1461,13 @@ class GridlineApp {
       this.startupPending = false;
       this.renderer.workbook = this.workbook; this.renderer.syncLayout(); this.updateUI(); this.renderTabs(); this.renderCharts();
       if (this.panelType === 'notes') this.showNotes();
-      $('#save-status').textContent = this.autosave ? 'Saving locally…' : 'Autosave is off';
+      $('#save-status').textContent = this.autosave ? 'Saving in this browser…' : 'Autosave is off';
       clearTimeout(this.saveTimer); if (this.autosave) this.saveTimer = setTimeout(() => this.persist(), 650);
     });
   }
   persist() {
     if (this.startupPending) return true;
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.workbook.toJSON())); $('#save-status').textContent = 'Saved on this device'; return true; }
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.workbook.toJSON())); $('#save-status').textContent = 'Saved in this browser'; return true; }
     catch { $('#save-status').textContent = 'Local storage full — export to save'; this.toast('Local storage is unavailable or full. Export a .gridline file to save your workbook.', true); return false; }
   }
   setWorkbook(workbook) {
@@ -1548,7 +1549,7 @@ class GridlineApp {
     document.addEventListener('cut', e => { if (this.isInputFocus()) return; this.copyToEvent(e, true); });
     document.addEventListener('paste', e => { if (this.isInputFocus() || this.dialog.open) return; e.preventDefault(); this.errorBoundary(() => this.pasteText(e.clipboardData.getData('text/plain'))); });
     $('#sheet-tabs').addEventListener('dblclick', e => { const t = e.target.closest('[data-sheet]'); if (t) { this.switchSheet(t.dataset.sheet); this.renameSheet(); } });
-    $('#sheet-tabs').addEventListener('contextmenu', e => { const t = e.target.closest('[data-sheet]'); if (t) { e.preventDefault(); this.switchSheet(t.dataset.sheet); this.contextMenu(e.clientX, e.clientY, [['rename-sheet','Rename…'],['duplicate-sheet','Duplicate'],['add-sheet','Insert worksheet'],null,['delete-sheet','Delete worksheet']]); } });
+    $('#sheet-tabs').addEventListener('contextmenu', e => { const t = e.target.closest('[data-sheet]'); if (t) { e.preventDefault(); this.switchSheet(t.dataset.sheet); this.contextMenu(e.clientX, e.clientY, [['rename-sheet','Rename…'],['tab-color','Tab Color…'],['duplicate-sheet','Duplicate'],['add-sheet','Insert worksheet'],null,['delete-sheet','Delete worksheet']]); } });
     for (const axis of ['v', 'h']) $(`#${axis}-scrollbar`).addEventListener('pointerdown', e => this.scrollbarDown(e, axis));
     this.dialog.addEventListener('click', e => { if (e.target === this.dialog) { const b = this.dialog.getBoundingClientRect(); if (e.clientX < b.left || e.clientX > b.right || e.clientY < b.top || e.clientY > b.bottom) this.closeDialog(); } });
     this.dialog.addEventListener('close', () => { if (!this.isInputFocus()) this.host.focus(); });
@@ -1570,7 +1571,7 @@ class GridlineApp {
     else if (hit.rowHeader && !hit.colHeader && Math.abs(p.y - rowRect.y - rowRect.h) < 6 && this.editable()) this.drag = { mode: 'resize-row', index: hit.r, start: p.y, size: this.renderer.rows.size(hit.r) };
     else {
       const end = this.renderer.cellRect(this.selection.r2, this.selection.c2, false);
-      if (!hit.colHeader && !hit.rowHeader && Math.abs(p.x - end.x - end.w) < 7 && Math.abs(p.y - end.y - end.h) < 7 && this.editable()) this.drag = { mode: 'fill', source: { ...this.selection } };
+      if (!hit.colHeader && !hit.rowHeader && Math.abs(p.x - end.x - end.w) < 7 && Math.abs(p.y - end.y - end.h) < 7 && this.editable()) this.drag = { mode: 'fill', source: { ...this.selection }, start: p };
       else {
         if (!e.shiftKey) this.anchor = { r: hit.r, c: hit.c };
         let q = normalizedRange(this.anchor, hit);
@@ -1590,6 +1591,7 @@ class GridlineApp {
       this.host.style.cursor = hit.colHeader && Math.abs(p.x - rect.x - rect.w) < 6 ? 'col-resize' : hit.rowHeader && Math.abs(p.y - rect.y - rect.h) < 6 ? 'row-resize' : Math.abs(p.x - end.x - end.w) < 7 && Math.abs(p.y - end.y - end.h) < 7 ? 'crosshair' : 'cell'; return;
     }
     const drag = this.drag;
+    if (drag.mode === 'fill' && !drag.target && Math.hypot(p.x - drag.start.x, p.y - drag.start.y) < 5) return;
     if (drag.mode === 'reference') {
       const q = normalizedRange(drag.anchor, hit), text = rangeAddress(q); drag.input.setRangeText(text, drag.start, drag.start + drag.length, 'end'); drag.length = text.length; this.formulaInput.value = drag.input.value; return;
     }
@@ -1718,9 +1720,9 @@ class GridlineApp {
       html += group('Font', `<div class="font-tools"><div class="ribbon-row"><select id="font-family" class="font-select" aria-label="Font family"><option>Aptos</option><option>Arial</option><option>Georgia</option><option>Verdana</option><option>Courier New</option></select><select id="font-size" class="font-size" aria-label="Font size">${[8,9,10,11,12,14,16,18,20,24,28,32,36,48].map(s => `<option${s === 10 ? ' selected' : ''}>${s}</option>`).join('')}</select>${mini('font-larger','plus','Increase font size','A⁺')}${mini('font-smaller','plus','Decrease font size','A⁻')}</div><div class="ribbon-row">${mini('bold','','Bold (Ctrl/⌘ B)','<span class="text-bold">B</span>')}${mini('italic','','Italic (Ctrl/⌘ I)','<span class="text-italic">I</span>')}${mini('underline','','Underline (Ctrl/⌘ U)','<span class="text-underline">U</span>')}<span class="ribbon-sep"></span>${mini('borders','border','Toggle cell borders')}<span class="ribbon-sep"></span><button class="mini-tool fill-color-tool" data-action="fill-color" title="Fill color" aria-label="Fill color">${icon('fill')}</button><button class="mini-tool font-color-tool" data-action="text-color" title="Font color" aria-label="Font color">A</button></div></div>`);
       html += group('Alignment', `<div class="font-tools"><div class="ribbon-row">${mini('align-left','alignLeft','Align left')}${mini('align-center','alignCenter','Center')}${mini('align-right','alignRight','Align right')}${tool('wrap','Wrap text','wrap')}</div><div class="ribbon-row">${tool('merge','Merge & center','merge')}</div></div>`);
       html += group('Number', `<div class="font-tools"><div class="ribbon-row"><select id="number-format" class="number-format" aria-label="Number format"><option value="general">General</option><option value="number">Number</option><option value="currency">Currency</option><option value="percent">Percentage</option><option value="date">Short date</option><option value="integer">Integer</option></select></div><div class="ribbon-row">${mini('currency','','Currency','$')}${mini('percent','percent','Percentage')}${mini('number','','Number with separator',',')}<span class="ribbon-sep"></span>${mini('decimal-less','','Decrease decimals','.0←')}${mini('decimal-more','','Increase decimals','→.00')}${mini('format-cells','table','Format cells (Ctrl/⌘ 1)')}</div></div>`);
+      html += group('Editing', stack(tool('autosum','AutoSum','sum'),tool('clear-menu','Clear','clear')) + tool('sort-filter','Sort &<br>filter','sort',true,true) + tool('find','Find &<br>select','search',true,true));
       html += group('Styles', tool('conditional','Conditional<br>formatting','conditional',true,true) + tool('format-table','Format as<br>table','table',true,true) + `<div class="style-gallery"><button class="style-chip" data-action="style-normal">Normal</button><button class="style-chip good" data-action="style-good">Good</button><button class="style-chip heading" data-action="style-heading">Heading</button><button class="style-chip warning" data-action="style-warning">Warning</button></div>`, 'styles-group');
       html += group('Cells', tool('insert-menu','Insert','insert',true,true) + tool('delete-menu','Delete','delete',true,true));
-      html += group('Editing', stack(tool('autosum','AutoSum','sum'),tool('clear-menu','Clear','clear')) + tool('sort-filter','Sort &<br>filter','sort',true,true) + tool('find','Find &<br>select','search',true,true));
     } else if (this.tab === 'Insert') {
       html = group('Tables',tool('format-table','Table','table',true)) + group('Charts',tool('chart','Column chart','chart',true)+tool('chart-line','Line chart','line',true)+tool('chart-bar','Bar chart','sort',true)+tool('chart-donut','Doughnut chart','donut',true)) + group('Text & references',tool('add-note','Cell note','comment',true)+tool('name-manager','Named range','name',true)) + group('Worksheets',tool('add-sheet','New sheet','plus',true)+tool('duplicate-sheet','Duplicate sheet','copy',true));
     } else if (this.tab === 'Page Layout') {
@@ -1741,7 +1743,7 @@ class GridlineApp {
     this.updateUI();
   }
   renderTabs() {
-    $('#sheet-tabs').innerHTML = this.workbook.sheets.map(s => `<button class="sheet-tab ${s.id === this.sheet.id ? 'selected' : ''}" data-sheet="${escapeHTML(s.id)}" title="Double-click to rename · Right-click for options"><span class="sheet-tab-dot" style="background:${/^#[0-9a-f]{6}$/i.test(s.color) ? s.color : '#18835a'}"></span>${escapeHTML(s.name)}</button>`).join('');
+    $('#sheet-tabs').innerHTML = this.workbook.sheets.map(s => `<button class="sheet-tab ${s.id === this.sheet.id ? 'selected' : ''}" data-sheet="${escapeHTML(s.id)}" title="Double-click to rename · Right-click for options"><span class="sheet-tab-dot" style="background:${/^#[0-9a-f]{6}$/i.test(s.color) ? s.color : 'transparent'}"></span>${escapeHTML(s.name)}</button>`).join('');
   }
   switchSheet(id) {
     if (id === this.sheet.id) return; if (['find','analyze'].includes(this.panelType)) this.closePanel(); this.commitEdit(false); this.commitFormula(); this.sheetViews.set(this.sheet.id, { selection: { ...this.selection }, active: { ...this.active }, scrollX: this.renderer.scrollX, scrollY: this.renderer.scrollY });
@@ -1751,15 +1753,16 @@ class GridlineApp {
   format(style) { if (this.editable()) this.workbook.applyStyle(this.sheet, this.selection, style); }
   showColorPicker(property) {
     if (!this.editable()) return;
-    const sheet = this.sheet, q = {...this.selection}, current = sheet.style(this.active.r,this.active.c)[property];
+    const sheet = this.sheet, q = {...this.selection}, current = property === 'tab' ? sheet.color : sheet.style(this.active.r,this.active.c)[property];
     const initial = /^#[0-9a-f]{6}$/i.test(current || '') ? current : property === 'fill' ? '#e2efda' : '#176b4a';
     const colors = ['#ffffff','#000000','#293b32','#176b4a','#e2efda','#ff0000','#ffc000','#ffff00','#00b050','#00b0f0','#0070c0','#7030a0'];
-    this.openDialog(property === 'fill' ? 'Fill Color' : 'Text Color', `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:18px">${colors.map(color=>`<button type="button" data-swatch="${color}" aria-label="Color ${color}" title="${color}" style="height:32px;background:${color};border:1px solid var(--line)"></button>`).join('')}</div><label class="field-label" for="color-picker">Custom color</label><input id="color-picker" type="color" value="${initial}" style="width:100%;height:40px"><label class="field-label" for="color-hex">Hex color</label><input id="color-hex" class="dialog-input" value="${initial}" pattern="#[0-9a-fA-F]{6}" required maxlength="7"><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Cancel</button><button id="color-apply" class="primary-btn">Apply</button></div>`, 360);
+    this.openDialog(property === 'tab' ? 'Tab Color' : property === 'fill' ? 'Fill Color' : 'Text Color', `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:18px">${colors.map(color=>`<button type="button" data-swatch="${color}" aria-label="Color ${color}" title="${color}" style="height:32px;background:${color};border:1px solid var(--line)"></button>`).join('')}</div><label class="field-label" for="color-picker">Custom color</label><input id="color-picker" type="color" value="${initial}" style="width:100%;height:40px"><label class="field-label" for="color-hex">Hex color</label><input id="color-hex" class="dialog-input" value="${initial}" pattern="#[0-9a-fA-F]{6}" required maxlength="7"><div class="dialog-actions">${property === 'tab' ? '<button id="color-clear" class="secondary-btn">No Color</button>' : ''}<button class="secondary-btn" data-action="close-dialog">Cancel</button><button id="color-apply" class="primary-btn">Apply</button></div>`, 360);
+    if (property === 'tab') $('#color-clear').onclick = () => this.errorBoundary(() => { this.workbook.mutate('Clear tab color', () => { sheet.color = null; }); this.closeDialog(); });
     const picker = $('#color-picker'), hex = $('#color-hex');
     $$('[data-swatch]').forEach(button => button.onclick = () => { picker.value = hex.value = button.dataset.swatch; });
     picker.oninput = () => { hex.value = picker.value; };
     hex.oninput = () => { if (hex.validity.valid) picker.value = hex.value; };
-    $('#color-apply').onclick = () => this.errorBoundary(() => { if (!hex.reportValidity()) return; this.workbook.applyStyle(sheet,q,{[property]:hex.value.toLowerCase()}); this.closeDialog(); });
+    $('#color-apply').onclick = () => this.errorBoundary(() => { if (!hex.reportValidity()) return; if (property === 'tab') this.workbook.mutate('Change tab color', () => { sheet.color = hex.value.toLowerCase(); }); else this.workbook.applyStyle(sheet,q,{[property]:hex.value.toLowerCase()}); this.closeDialog(); });
   }
   showFormatCells() {
     if (!this.editable()) return;
@@ -1851,6 +1854,7 @@ class GridlineApp {
       case 'paste': case 'paste-values': case 'paste-formula': return this.paste(action);
       case 'format-cells': return this.showFormatCells();
       case 'format-painter': this.paintStyle = structuredClone(style); this.toast('Select a cell or range to apply the current formatting.'); return;
+      case 'tab-color': return this.showColorPicker('tab');
       case 'fill-color': return this.showColorPicker('fill');
       case 'text-color': return this.showColorPicker('color');
       case 'borders': return this.format({ border: !style.border });
@@ -2033,7 +2037,7 @@ class GridlineApp {
     menu.onclick = () => menu.hidden = true;
   }
   menuAt(element, entries) { const box = element?.getBoundingClientRect(); this.contextMenu(box?.left ?? 200, box?.bottom ?? 200, entries); }
-  cellContextMenu(x, y, header = null) { this.contextMenu(x,y,[['cut','Cut','Ctrl/⌘ X'],['copy','Copy','Ctrl/⌘ C'],['paste','Paste','Ctrl/⌘ V'],null,['insert-row','Insert row above'],['insert-column','Insert column left'],['delete-row','Delete row'],['delete-column','Delete column'],null,['clear','Clear contents','Delete'],['format-cells','Format cells…','Ctrl/⌘ 1'],['auto-fit','Auto-fit columns'],['hide-columns','Hide columns'],['unhide-columns','Unhide columns'],['unhide-all-columns','Unhide all columns'],['add-note','Add / edit note'],['inspect-formula','Inspect cell'],null,['filter','Filter values…']].filter(entry => !entry || (!header || !entry[0].startsWith('insert-') && !entry[0].startsWith('delete-') || entry[0].endsWith(header)) && (header !== 'row' || entry[0] !== 'auto-fit') && (!['hide-columns','unhide-columns','unhide-all-columns'].includes(entry[0]) || header === 'column'))); }
+  cellContextMenu(x, y, header = null) { this.contextMenu(x,y,[['cut','Cut','Ctrl/⌘ X'],['copy','Copy','Ctrl/⌘ C'],['paste','Paste','Ctrl/⌘ V'],null,['insert-row','Insert row above'],['insert-column','Insert column left'],['delete-row','Delete row'],['delete-column','Delete column'],null,['clear','Clear contents','Delete'],['format-cells','Format cells…','Ctrl/⌘ 1'],['fill-color','Fill Color…'],['auto-fit','Auto-fit columns'],['hide-columns','Hide columns'],['unhide-columns','Unhide columns'],['unhide-all-columns','Unhide all columns'],['add-note','Add / edit note'],['inspect-formula','Inspect cell'],null,['filter','Filter values…']].filter(entry => !entry || (!header || !entry[0].startsWith('insert-') && !entry[0].startsWith('delete-') || entry[0].endsWith(header)) && (header !== 'row' || entry[0] !== 'auto-fit') && (!['hide-columns','unhide-columns','unhide-all-columns'].includes(entry[0]) || header === 'column'))); }
   showFile() {
     const card=(action,title,desc,image)=>`<button class="file-card" data-action="${action}">${icon(image)}<span><strong>${title}</strong><small>${desc}</small></span></button>`;
     this.openDialog('Your workspace', `<div class="file-hero"><div class="eyebrow">GRIDLINE / LOCAL FIRST</div><h3>Big ideas.<br>Beautifully organized.</h3><p>A spreadsheet that gives your numbers room to make sense.</p></div><div class="dialog-grid">${card('new','Blank workbook','Start with a clean sheet.','file')}${card('open','Open a workbook','Gridline, XLSX, CSV or TSV.','open')}${card('save','Save a copy','Preserve every Gridline feature.','save')}${card('export','Export your work','Excel workbook or CSV values.','export')}${card('sample','Explore the demo','A fictional revenue operations model.','table')}${card('help','Make yourself at home','Shortcuts, formulas and editing tips.','info')}</div><p><label><input id="reopen-last" type="checkbox" role="switch"${this.reopenLast ? ' checked' : ''}> Reopen last workbook on startup</label> <button id="reopen-now" type="button" style="color:var(--green);text-decoration:underline;padding:4px 0;margin-left:12px">Reopen last workbook now</button></p><p class="help-text" style="margin:20px 0 0">No account. No uploads. Workbook data is processed in your browser. Local autosave is specific to this browser and site.</p>`, 620);
@@ -2050,8 +2054,8 @@ class GridlineApp {
   }
   showConditional() {
     if (!this.editable()) return;
-    this.openDialog('Conditional formatting', `<p class="help-text">Apply a live rule to <b>${rangeAddress(this.selection)}</b>. Formatting updates when formula results change.</p><div class="dialog-grid"><button class="file-card" data-rule="bars">${icon('chart')}<span><strong>Data bars</strong><small>Compare the magnitude of each value.</small></span></button><button class="file-card" data-rule="scale">${icon('conditional')}<span><strong>Green color scale</strong><small>Shade cells from low to high.</small></span></button><button class="file-card" data-rule="positive">${icon('percent')}<span><strong>Positive / negative</strong><small>Green gains and red losses.</small></span></button><button class="file-card" data-rule="greater">${icon('check')}<span><strong>Greater than…</strong><small>Highlight values above a threshold.</small></span></button></div><label class="field-label">Threshold for “Greater than”</label><input id="cf-threshold" class="dialog-input" type="number" value="0"><div class="dialog-actions"><button id="clear-rules" class="secondary-btn">Clear sheet rules</button></div>`);
-    $$('[data-rule]').forEach(button => button.onclick = () => this.errorBoundary(() => { const range = {...this.selection}; [...cellsIn(range)]; const rule={type:button.dataset.rule,range,value:Number($('#cf-threshold').value)}; this.workbook.mutate('Conditional formatting',()=>this.sheet.conditionalRules.push(rule)); this.closeDialog(); }));
+    this.openDialog('Conditional formatting', `<p class="help-text">Apply a live rule to <b>${rangeAddress(this.selection)}</b>. Formatting updates when formula results change.</p><div class="dialog-grid"><button class="file-card" data-rule="bars">${icon('chart')}<span><strong>Data bars</strong><small>Compare the magnitude of each value.</small></span></button><button class="file-card" data-rule="scale">${icon('conditional')}<span><strong>Green color scale</strong><small>Shade cells from low to high.</small></span></button><button class="file-card" data-rule="positive">${icon('percent')}<span><strong>Positive / negative</strong><small>Green gains and red losses.</small></span></button><button class="file-card" data-rule="greater">${icon('check')}<span><strong>Greater than…</strong><small>Highlight values above a threshold.</small></span></button><button class="file-card" data-rule="contains"><span><strong>Specific Text containing</strong><small>Highlight cells containing the text below.</small></span></button><button class="file-card" data-rule="not-contains"><span><strong>Specific Text not containing</strong><small>Highlight nonblank cells without the text below.</small></span></button><button class="file-card" data-rule="blank"><span><strong>Blank</strong><small>Highlight empty cells, including formulas returning empty text.</small></span></button></div><label class="field-label" for="cf-text">Specific text (case-insensitive)</label><input id="cf-text" class="dialog-input" type="text" required><label class="field-label" for="cf-threshold">Threshold for “Greater than”</label><input id="cf-threshold" class="dialog-input" type="number" value="0"><div class="dialog-actions"><button id="clear-rules" class="secondary-btn">Clear sheet rules</button></div>`);
+    $$('[data-rule]').forEach(button => button.onclick = () => this.errorBoundary(() => { const type = button.dataset.rule, textRule = type === 'contains' || type === 'not-contains'; if (textRule && !$('#cf-text').reportValidity()) return; const range = {...this.selection}; [...cellsIn(range)]; const rule={type,range,value:textRule ? $('#cf-text').value : Number($('#cf-threshold').value)}; this.workbook.mutate('Conditional formatting',()=>this.sheet.conditionalRules.push(rule)); this.closeDialog(); }));
     $('#clear-rules').onclick=()=>{this.workbook.mutate('Clear conditional rules',()=>this.sheet.conditionalRules=[]);this.closeDialog();};
   }
   showTextToColumns() {

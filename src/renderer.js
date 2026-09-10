@@ -216,6 +216,7 @@ export class GridRenderer {
         const q = rule.range; if (r < q.r1 || r > q.r2 || c < q.c1 || c > q.c2) continue;
         if (rule.type === 'positive' && typeof value === 'number') { style.color = value >= 0 ? '#16815c' : '#c14944'; style.bold = true; }
         if (rule.type === 'greater' && typeof value === 'number' && value > rule.value) { style.fill = '#d9eee3'; style.color = '#166444'; }
+        if (rule.type === 'blank' && (value == null || value === '') || (rule.type === 'contains' || rule.type === 'not-contains') && value != null && value !== '' && !(value instanceof FormulaError) && String(value).toLowerCase().includes(String(rule.value).toLowerCase()) === (rule.type === 'contains')) { style.fill = '#d9eee3'; style.color = '#166444'; }
         if (rule.type === 'scale' && typeof value === 'number') {
           const stats = ruleStats.get(rule), t = stats.max === stats.min ? 0.5 : (value - stats.min) / (stats.max - stats.min);
           style.fill = '#' + [Math.round(243 - t * 74), Math.round(248 - t * 35), Math.round(241 - t * 52)].map(x => x.toString(16).padStart(2, '0')).join('');
