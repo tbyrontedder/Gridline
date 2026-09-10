@@ -119,7 +119,7 @@ export class GridRenderer {
     this.canvas.style.width = this.width + 'px'; this.canvas.style.height = this.height + 'px'; this.requestFrame();
   }
   syncLayout() {
-    const sheet = this.workbook.activeSheet; this.cols = new AxisLayout(MAX_COLS, 106, sheet.colWidths, sheet.hiddenCols); this.rows = new AxisLayout(MAX_ROWS, 27, sheet.rowHeights, sheet.hiddenRows); this.requestFrame();
+    const sheet = this.workbook.activeSheet; this.populatedRows = sheet.populatedRange({r1:0,c1:0,r2:MAX_ROWS-1,c2:MAX_COLS-1}).r2 + 1; this.cols = new AxisLayout(MAX_COLS, 106, sheet.colWidths, sheet.hiddenCols); this.rows = new AxisLayout(MAX_ROWS, 27, sheet.rowHeights, sheet.hiddenRows); this.requestFrame();
   }
   setZoom(zoom) {
     const old = this.zoom; this.zoom = Math.max(0.5, Math.min(2, zoom)); this.scrollX *= this.zoom / old; this.scrollY *= this.zoom / old;

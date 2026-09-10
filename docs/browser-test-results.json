@@ -5,7 +5,7 @@
     "backend": "canvas2d",
     "reason": "WebGPU is not exposed by this browser."
   },
-  "passed": 81,
+  "passed": 86,
   "checks": [
     {
       "name": "Standalone app boots without an uncaught exception",
@@ -177,7 +177,7 @@
       "name": "Stress sheet creates 80,008 sparse cells",
       "passed": true,
       "detail": {
-        "wall_ms": 117.87
+        "wall_ms": 133.4
       }
     },
     {
@@ -193,7 +193,7 @@
       "passed": true,
       "detail": {
         "visibleCells": 576,
-        "lastFrameCPUms": 2.100000023841858,
+        "lastFrameCPUms": 1.5999999046325684,
         "storedCells": 80008,
         "active": {
           "r": 10000,
@@ -591,11 +591,36 @@
       "name": "Color interactions have no uncaught browser errors",
       "passed": true,
       "detail": []
+    },
+    {
+      "name": "Replace changes visible date separators and unknown-year text",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Undo restores numeric dates after displayed replacement",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Clicking scrollbar bottom stops at last populated row, ignoring formatting-only cells",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Entering data beyond scrollbar extent expands it",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Empty-sheet scrollbar does not jump or produce negative scroll",
+      "passed": true,
+      "detail": null
     }
   ],
   "stressMetrics": {
     "visibleCells": 576,
-    "lastFrameCPUms": 2.100000023841858,
+    "lastFrameCPUms": 1.5999999046325684,
     "storedCells": 80008,
     "active": {
       "r": 10000,
