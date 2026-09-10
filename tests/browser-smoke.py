@@ -21,6 +21,8 @@ def check(name, condition, detail=None):
 with sync_playwright() as p:
     browser = p.chromium.launch(executable_path=args.chromium, headless=True, args=['--no-sandbox'])
     page = browser.new_page(viewport={'width':1536, 'height':1240}, device_scale_factor=1)
+    launch_mock = "Object.defineProperty(window,'launchQueue',{configurable:true,value:{setConsumer:consumer=>window.testFileLaunch=consumer}});"
+    page.add_init_script(launch_mock)
     errors = []
     page.on('pageerror', lambda e: errors.append(str(e)))
     if args.url:
@@ -28,7 +30,7 @@ with sync_playwright() as p:
     else:
         storage = '''<script>(()=>{const m=new Map();Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem:k=>m.get(k)??null,setItem:(k,v)=>m.set(k,String(v)),removeItem:k=>m.delete(k),clear:()=>m.clear(),key:i=>[...m.keys()][i]??null,get length(){return m.size}}});})();</script>'''
         html = (ROOT/'dist/index.html').read_text()
-        page.set_content(html.replace('<head>', '<head>'+storage, 1), wait_until='networkidle')
+        page.set_content(html.replace('<head>', '<head><script>'+launch_mock+'</script>'+storage, 1), wait_until='networkidle')
     page.wait_for_function('window.gridline && window.gridline.ready', timeout=45000)
     page.wait_for_timeout(300)
     backend = page.evaluate('({backend:gridline.renderer.backend,reason:gridline.renderer.fallbackReason})')
@@ -402,6 +404,23 @@ with sync_playwright() as p:
         z.writestr('xl/worksheets/sheet1.xml', '<worksheet><sheetData><row r="1"><c r="A1" s="1"><v>1</v></c></row><row r="2"><c r="A2" s="0"><v>2</v></c></row></sheetData></worksheet>')
     font_flags = page.evaluate("""async b=>{const w=(await Gridline.importXLSX(Uint8Array.from(atob(b),c=>c.charCodeAt(0)))).workbook;return [w.activeSheet.style(0,0),w.activeSheet.style(1,0)];}""", base64.b64encode(font_fixture.getvalue()).decode())
     check('XLSX honors explicit false font flags and underline none', font_flags[0]['bold'] and not font_flags[0]['italic'] and not font_flags[0]['underline'] and not font_flags[1]['bold'] and not font_flags[1]['italic'] and not font_flags[1]['underline'], font_flags)
+    page.evaluate("testFileLaunch({files:[]})")
+    page.evaluate("testFileLaunch({files:[{getFile:async()=>new File(['Name,Year\\nExample,1987'],'launch.csv',{type:'text/csv'})}]})")
+    page.wait_for_function('gridline.workbook.title === "launch"')
+    check('Chrome file launch opens CSV with the existing importer', val(1,0)=='Example' and val(1,1)==1987)
+    page.evaluate("""()=>{const w=new Gridline.Workbook();w.setRaw(w.activeSheet,0,0,'From Excel');const bytes=Gridline.exportXLSX(w);testFileLaunch({files:[{getFile:async()=>new File([bytes],'launch-excel.xlsx')}]});}""")
+    page.wait_for_function('gridline.workbook.title === "launch-excel"')
+    check('Chrome file launch opens XLSX with the existing importer',val(0,0)=='From Excel')
+    page.evaluate("testFileLaunch({files:[{getFile:async()=>{throw new Error('File permission test');}}]})")
+    page.wait_for_function('document.querySelector("#toast").textContent === "File permission test"')
+    check('Failed file launch preserves the active workbook', val(0,0)=='From Excel')
+    if args.url:
+        manifest = page.evaluate("async()=>{const response=await fetch(document.querySelector('link[rel=manifest]').href);return {type:response.headers.get('content-type'),data:await response.json()};}")
+        check('Served build exposes install manifest and file handlers', 'application/manifest+json' in manifest['type'] and manifest['data']['file_handlers'][0]['launch_type']=='multiple-clients')
+        check('App icons load from the deployment subdirectory', page.evaluate("async()=>{const m=new URL(document.querySelector('link[rel=manifest]').href);const data=await(await fetch(m)).json();return (await Promise.all(data.icons.map(async icon=>{const response=await fetch(new URL(icon.src,m));return response.ok && response.headers.get('content-type').startsWith('image/png');}))).every(Boolean);}"))
+        cdp = page.context.new_cdp_session(page)
+        check('Chrome reports no manifest installability errors', not [e for e in cdp.send('Page.getInstallabilityErrors')['installabilityErrors'] if e['errorId'] != 'in-incognito'])
+    check('File launch tests have no uncaught browser errors',not errors,errors)
     report={'harness':'served origin' if args.url else 'inline opaque origin, in-memory Storage fixture','browser':browser.version,'backend':backend,'passed':len(checks),'checks':checks,'stressMetrics':metrics,'uncaughtErrors':errors,'notes':['GPU execution is verified only when backend is webgpu.','CPU frame measurement is not GPU completion time or a cross-machine benchmark.','In-memory storage fixture does not validate real browser persistence.']}
     (ROOT/'docs/browser-test-results.json').write_text(json.dumps(report,indent=2))
     print(json.dumps({'passed':len(checks),'backend':backend,'stress':metrics},indent=2))

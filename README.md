@@ -165,3 +165,13 @@ All four editing operations support Undo / Redo.
 Copying trims empty trailing rows and columns within the selection, ignoring formatting-only cells and data outside the selection. Blank rows between records remain in place. The operation limit still applies to the resulting rectangle.
 
 The vertical scrollbar ends at the last row containing data, ignoring formatting-only cells. Navigation and typing beyond that row remain available; new data expands the scrollbar.
+
+## Install on a Mac
+
+Serve Gridline over HTTPS (or localhost during development). In Chrome, open Gridline and use the address-bar install icon, or the browser menu’s **Install Gridline** action. After installation, Finder → right-click an `.xlsx`, `.csv`, `.tsv`, or `.gridline` file → **Open With → Gridline**. Allow file handling when Chrome asks. Multiple selected files launch separate windows; existing windows are left open. The importer reads the selected file locally; Save/Export still downloads a copy rather than overwriting the original. Gridline has one local autosave slot per browser origin, so save separate workbooks before closing their windows.
+
+Safari on macOS Sonoma or later: **File → Add to Dock** installs a standalone Gridline window. Safari does not support the File Handling API used for Finder file associations; use Gridline’s **Open** command or drag a file into its worksheet. Safari web apps have separate website storage; open your saved workbook inside the Dock app. Installation does not add offline startup: the site must be reachable when launching. The existing downloaded standalone HTML remains available for offline use.
+
+The build includes the manifest and icons alongside `dist/index.html`; publish the entire `dist` folder. Relative URLs support both domain-root and GitHub Pages subdirectory hosting.
+
+References: [Chrome file handling](https://developer.chrome.com/docs/capabilities/web-apis/file-handling), [Safari web apps](https://support.apple.com/en-us/104996).

@@ -18,4 +18,5 @@ html = html.replace('<link rel="stylesheet" href="styles.css">', () => `<style>\
 fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
 fs.writeFileSync(path.join(root, 'dist', 'index.html'), html);
 fs.writeFileSync(path.join(root, 'dist', 'gridline.js'), js);
+for (const file of ['manifest.webmanifest','icon-192.png','icon-512.png']) fs.copyFileSync(path.join(root,file),path.join(root,'dist',file));
 console.log(`Built dist/index.html — ${Buffer.byteLength(html).toLocaleString()} bytes. No runtime dependencies.`);

@@ -1362,7 +1362,7 @@ class GridlineApp {
     this.renderer = new GridRenderer(this.host, this.workbook, (backend, reason) => { $('#backend-label').textContent = backend === 'webgpu' ? 'WebGPU accelerated' : 'Canvas2D fallback'; $('#renderer-status').title = reason || 'GPU-instanced grid and glyph atlas'; });
     this.renderer.onFrame = () => { this.positionEditor(); this.positionCharts(); this.updateScrollbars(); if (this.panelType === 'performance') this.refreshPerformance(); };
     this.observeWorkbook(); this.bindEvents(); this.renderRibbon(); this.renderTabs(); this.updateUI(); hydrateIcons(); this.renderCharts();
-    this.renderer.initialize(params.get('renderer') === 'canvas').then(() => { $('#loading').remove(); this.select(this.selection, this.active, false); this.host.focus(); this.ready = true; window.dispatchEvent(new Event('gridline-ready')); });
+    this.renderer.initialize(params.get('renderer') === 'canvas').then(() => { $('#loading').remove(); this.select(this.selection, this.active, false); this.host.focus(); this.ready = true; window.launchQueue?.setConsumer(params => { if (params.files?.length) this.errorBoundary(async () => { await this.openFile(await params.files[0].getFile()); }); }); window.dispatchEvent(new Event('gridline-ready')); });
   }
   get sheet() { return this.workbook.activeSheet; }
   observeWorkbook() {
