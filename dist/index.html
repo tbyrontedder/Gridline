@@ -254,7 +254,7 @@ function rewriteStructure(source, formulaSheet, targetSheet, axis, at, delta) {
       const end = refs[++i], b = parseAddress(end.value); if (!b) continue;
       const low = Math.min(a[coord], b[coord]), high = Math.max(a[coord], b[coord]);
       if (delta < 0 && low === high && low === at) { edits.push({ start: t.start, end: end.end, text: '#REF!' }); continue; }
-      if (delta > 0) { if (a[coord] >= at) a[coord]++; if (b[coord] >= at) b[coord]++; }
+      if (delta > 0) { if (a[coord] >= at) a[coord] += delta; if (b[coord] >= at) b[coord] += delta; }
       else {
         const reversed = a[coord] > b[coord];
         let lo = low > at ? low - 1 : low, hi = high >= at ? high - 1 : high;
@@ -757,7 +757,7 @@ class Workbook {
       if (axis === 'column') sheet.hiddenCols = new Set([...sheet.hiddenCols].filter(i => !(delta < 0 && i === at)).map(i => i >= at ? i + delta : i).filter(i => i < MAX_COLS));
       sheet.hiddenRows.clear(); sheet.filters = null; sheet.dataRegion = null;
       const a = axis === 'row' ? 'r1' : 'c1', b = axis === 'row' ? 'r2' : 'c2';
-      sheet.merges = sheet.merges.filter(q => !(delta < 0 && q[a] === at && q[b] === at)).map(q => { const n = { ...q }; if (delta > 0) { if (n[a] >= at) n[a]++; if (n[b] >= at) n[b]++; } else { if (n[a] > at) n[a]--; if (n[b] >= at) n[b]--; } return n; });
+      sheet.merges = sheet.merges.filter(q => !(delta < 0 && q[a] === at && q[b] === at)).map(q => { const n = { ...q }; if (delta > 0) { if (n[a] >= at) n[a] += delta; if (n[b] >= at) n[b] += delta; } else { if (n[a] > at) n[a]--; if (n[b] >= at) n[b]--; } return n; });
       for (const s of this.sheets) for (const cell of s.cells.values()) cell.raw = rewriteStructure(cell.raw, s.name, sheet.name, axis, at, delta);
       for (const [name, value] of Object.entries(this.names)) this.names[name] = rewriteStructure('=' + value, sheet.name, sheet.name, axis, at, delta).slice(1);
       // Chart/conditional ranges are layout metadata; conservatively discard rules whose coordinates would become stale.
@@ -926,7 +926,8 @@ class GridRenderer {
     const sheet = this.workbook.activeSheet, frozen = this.frozenSize();
     const px = Math.max(0, x - this.headerW), py = Math.max(0, y - this.headerH);
     let c = this.cols.find((px + (px >= frozen.x ? this.scrollX : 0)) / this.zoom), r = this.rows.find((py + (py >= frozen.y ? this.scrollY : 0)) / this.zoom);
-    const merge = sheet.mergeAt(r, c); if (merge) { r = merge.r1; c = merge.c1; }
+    if (y < this.headerH && x >= this.headerW && c > 0 && Math.abs(x - this.cellRect(0,c,false).x) < 6) { do { c--; } while (c > 0 && this.cols.size(c) === 0); }
+    const merge = y >= this.headerH && x >= this.headerW ? sheet.mergeAt(r, c) : null; if (merge) { r = merge.r1; c = merge.c1; }
     return { r, c, rowHeader: x < this.headerW, colHeader: y < this.headerH };
   }
   ensureVisible(r, c) {
@@ -1507,7 +1508,7 @@ class GridlineApp {
     this.host.addEventListener('pointermove', e => this.onPointerMove(e));
     this.host.addEventListener('pointerup', e => this.onPointerUp(e));
     this.host.addEventListener('pointercancel', e => this.onPointerUp(e));
-    this.host.addEventListener('dblclick', e => { if (e.target.closest('.chart-card,.scroll-thumb,.cell-editor')) return; const p = this.localPoint(e), hit = this.renderer.hitTest(p.x, p.y); if (hit.colHeader) this.autoFit(hit.c); else if (!hit.rowHeader) this.startEdit(); });
+    this.host.addEventListener('dblclick', e => { if (e.target.closest('.chart-card,.scroll-thumb,.cell-editor')) return; const p = this.localPoint(e), hit = this.renderer.hitTest(p.x, p.y); if (hit.colHeader) this.autoFit(this.selection.r1 === 0 && this.selection.r2 === MAX_ROWS - 1 && hit.c >= this.selection.c1 && hit.c <= this.selection.c2 ? null : hit.c); else if (!hit.rowHeader) this.startEdit(); });
     this.host.addEventListener('contextmenu', e => {
       if (e.target.closest('.cell-editor')) return; e.preventDefault(); this.errorBoundary(() => {
         this.commitEdit(false); this.commitFormula();
@@ -1545,7 +1546,7 @@ class GridlineApp {
   isInputFocus() { return ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable; }
   localPoint(e) { const rect = this.host.getBoundingClientRect(); return { x: e.clientX - rect.left, y: e.clientY - rect.top }; }
   onPointerDown(e) {
-    if (e.button !== 0 || e.target.closest('.chart-card,.v-scrollbar,.h-scrollbar,.cell-editor,.formula-suggestions')) return;
+    if (e.button !== 0 || e.ctrlKey || e.target.closest('.chart-card,.v-scrollbar,.h-scrollbar,.cell-editor,.formula-suggestions')) return;
     const p = this.localPoint(e), hit = this.renderer.hitTest(p.x, p.y), refInput = this.editing ? this.editor : this.barEditing ? this.formulaInput : null;
     if (refInput && refInput.value.startsWith('=') && /[=+\-*/^(,:<> ]$/.test(refInput.value.slice(0, refInput.selectionStart))) {
       e.preventDefault(); const at = refInput.selectionStart; const text = address(hit.r, hit.c); refInput.setRangeText(text, at, refInput.selectionEnd, 'end'); this.formulaInput.value = refInput.value;
@@ -1774,8 +1775,9 @@ class GridlineApp {
     options(true);
   }
   autoFit(column = null) {
-    if (!this.editable()) return; const cols = column === null ? [this.selection.c1, Math.min(this.selection.c2, this.selection.c1 + 199)] : [column, column], sizes = new Map();
-    for (let c = cols[0]; c <= cols[1]; c++) { let width = 54; for (const [key, cell] of this.sheet.cells) { const [r, cc] = key.split(',').map(Number); if (cc !== c || this.sheet.mergeAt(r, c)) continue; const text = this.workbook.display(this.sheet, r, c); const font = this.renderer.font(this.sheet.style(r,c)); width = Math.max(width, this.renderer.measureText(text, font) / this.renderer.zoom + 23); } sizes.set(c, Math.min(500, Math.ceil(width))); }
+    if (!this.editable()) return; const cols = column === null ? [this.selection.c1, this.selection.c2] : [column, column], sizes = new Map();
+    for (let c = cols[0]; c <= cols[1]; c++) sizes.set(c,54);
+    for (const [key] of this.sheet.cells) { const [r,c] = key.split(',').map(Number); if (!sizes.has(c) || this.sheet.mergeAt(r,c)) continue; const text = this.workbook.display(this.sheet,r,c), font = this.renderer.font(this.sheet.style(r,c)); sizes.set(c,Math.min(500,Math.max(sizes.get(c),Math.ceil(this.renderer.measureText(text,font) / this.renderer.zoom + 23)))); }
     this.workbook.mutate('Auto-fit columns', () => { for (const [c, width] of sizes) this.sheet.colWidths.set(c, width); });
   }
   dataRange() {
@@ -1845,7 +1847,8 @@ class GridlineApp {
       case 'clear': if (this.editable()) this.workbook.clear(this.sheet, this.selection); return;
       case 'clear-all': if (this.editable()) this.workbook.clear(this.sheet, this.selection, true); return;
       case 'clear-format': return this.format({ format:'general', bold:false, italic:false, underline:false, wrap:false, align:null, fill:null, color:null, border:false, borderColor:null, bottomBorder:null, fontFamily:'Aptos', fontSize:13 });
-      case 'insert-row': case 'delete-row': case 'insert-column': case 'delete-column': if (this.editable()) { const axis = action.endsWith('row') ? 'row' : 'column'; this.workbook.structuralEdit(this.sheet, axis, axis === 'row' ? this.active.r : this.active.c, action.startsWith('insert') ? 1 : -1); this.toast('Structural edit applied. Chart, filter and conditional-rule metadata on this sheet was reset; Undo restores it.'); } return;
+      case 'insert-column': if (this.editable()) { const {c1,c2} = this.selection; this.workbook.structuralEdit(this.sheet,'column',c1,c2-c1+1); } return;
+      case 'insert-row': case 'delete-row': case 'delete-column': if (this.editable()) { const axis = action.endsWith('row') ? 'row' : 'column'; this.workbook.structuralEdit(this.sheet, axis, axis === 'row' ? this.active.r : this.active.c, action.startsWith('insert') ? 1 : -1); this.toast('Structural edit applied. Chart, filter and conditional-rule metadata on this sheet was reset; Undo restores it.'); } return;
       case 'autosum': return this.autoSum();
       case 'fill-down': if (this.editable()) { const q = this.selection; const source = { ...q, r2: q.r1 }; if (q.r1 === q.r2 && q.r1 > 0) { source.r1 = source.r2 = q.r1 - 1; } this.workbook.fill(this.sheet, source, q); } return;
       case 'fill-right': if (this.editable()) { const q = this.selection, source = { ...q, c2: q.c1 }; if (q.c1 === q.c2 && q.c1 > 0) source.c1 = source.c2 = q.c1 - 1; this.workbook.fill(this.sheet, source, q); } return;

@@ -168,7 +168,7 @@ function rewriteStructure(source, formulaSheet, targetSheet, axis, at, delta) {
       const end = refs[++i], b = parseAddress(end.value); if (!b) continue;
       const low = Math.min(a[coord], b[coord]), high = Math.max(a[coord], b[coord]);
       if (delta < 0 && low === high && low === at) { edits.push({ start: t.start, end: end.end, text: '#REF!' }); continue; }
-      if (delta > 0) { if (a[coord] >= at) a[coord]++; if (b[coord] >= at) b[coord]++; }
+      if (delta > 0) { if (a[coord] >= at) a[coord] += delta; if (b[coord] >= at) b[coord] += delta; }
       else {
         const reversed = a[coord] > b[coord];
         let lo = low > at ? low - 1 : low, hi = high >= at ? high - 1 : high;
@@ -671,7 +671,7 @@ export class Workbook {
       if (axis === 'column') sheet.hiddenCols = new Set([...sheet.hiddenCols].filter(i => !(delta < 0 && i === at)).map(i => i >= at ? i + delta : i).filter(i => i < MAX_COLS));
       sheet.hiddenRows.clear(); sheet.filters = null; sheet.dataRegion = null;
       const a = axis === 'row' ? 'r1' : 'c1', b = axis === 'row' ? 'r2' : 'c2';
-      sheet.merges = sheet.merges.filter(q => !(delta < 0 && q[a] === at && q[b] === at)).map(q => { const n = { ...q }; if (delta > 0) { if (n[a] >= at) n[a]++; if (n[b] >= at) n[b]++; } else { if (n[a] > at) n[a]--; if (n[b] >= at) n[b]--; } return n; });
+      sheet.merges = sheet.merges.filter(q => !(delta < 0 && q[a] === at && q[b] === at)).map(q => { const n = { ...q }; if (delta > 0) { if (n[a] >= at) n[a] += delta; if (n[b] >= at) n[b] += delta; } else { if (n[a] > at) n[a]--; if (n[b] >= at) n[b]--; } return n; });
       for (const s of this.sheets) for (const cell of s.cells.values()) cell.raw = rewriteStructure(cell.raw, s.name, sheet.name, axis, at, delta);
       for (const [name, value] of Object.entries(this.names)) this.names[name] = rewriteStructure('=' + value, sheet.name, sheet.name, axis, at, delta).slice(1);
       // Chart/conditional ranges are layout metadata; conservatively discard rules whose coordinates would become stale.

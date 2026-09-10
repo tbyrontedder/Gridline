@@ -136,7 +136,8 @@ export class GridRenderer {
     const sheet = this.workbook.activeSheet, frozen = this.frozenSize();
     const px = Math.max(0, x - this.headerW), py = Math.max(0, y - this.headerH);
     let c = this.cols.find((px + (px >= frozen.x ? this.scrollX : 0)) / this.zoom), r = this.rows.find((py + (py >= frozen.y ? this.scrollY : 0)) / this.zoom);
-    const merge = sheet.mergeAt(r, c); if (merge) { r = merge.r1; c = merge.c1; }
+    if (y < this.headerH && x >= this.headerW && c > 0 && Math.abs(x - this.cellRect(0,c,false).x) < 6) { do { c--; } while (c > 0 && this.cols.size(c) === 0); }
+    const merge = y >= this.headerH && x >= this.headerW ? sheet.mergeAt(r, c) : null; if (merge) { r = merge.r1; c = merge.c1; }
     return { r, c, rowHeader: x < this.headerW, colHeader: y < this.headerH };
   }
   ensureVisible(r, c) {

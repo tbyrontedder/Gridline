@@ -112,7 +112,7 @@ class GridlineApp {
     this.host.addEventListener('pointermove', e => this.onPointerMove(e));
     this.host.addEventListener('pointerup', e => this.onPointerUp(e));
     this.host.addEventListener('pointercancel', e => this.onPointerUp(e));
-    this.host.addEventListener('dblclick', e => { if (e.target.closest('.chart-card,.scroll-thumb,.cell-editor')) return; const p = this.localPoint(e), hit = this.renderer.hitTest(p.x, p.y); if (hit.colHeader) this.autoFit(hit.c); else if (!hit.rowHeader) this.startEdit(); });
+    this.host.addEventListener('dblclick', e => { if (e.target.closest('.chart-card,.scroll-thumb,.cell-editor')) return; const p = this.localPoint(e), hit = this.renderer.hitTest(p.x, p.y); if (hit.colHeader) this.autoFit(this.selection.r1 === 0 && this.selection.r2 === MAX_ROWS - 1 && hit.c >= this.selection.c1 && hit.c <= this.selection.c2 ? null : hit.c); else if (!hit.rowHeader) this.startEdit(); });
     this.host.addEventListener('contextmenu', e => {
       if (e.target.closest('.cell-editor')) return; e.preventDefault(); this.errorBoundary(() => {
         this.commitEdit(false); this.commitFormula();
@@ -150,7 +150,7 @@ class GridlineApp {
   isInputFocus() { return ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable; }
   localPoint(e) { const rect = this.host.getBoundingClientRect(); return { x: e.clientX - rect.left, y: e.clientY - rect.top }; }
   onPointerDown(e) {
-    if (e.button !== 0 || e.target.closest('.chart-card,.v-scrollbar,.h-scrollbar,.cell-editor,.formula-suggestions')) return;
+    if (e.button !== 0 || e.ctrlKey || e.target.closest('.chart-card,.v-scrollbar,.h-scrollbar,.cell-editor,.formula-suggestions')) return;
     const p = this.localPoint(e), hit = this.renderer.hitTest(p.x, p.y), refInput = this.editing ? this.editor : this.barEditing ? this.formulaInput : null;
     if (refInput && refInput.value.startsWith('=') && /[=+\-*/^(,:<> ]$/.test(refInput.value.slice(0, refInput.selectionStart))) {
       e.preventDefault(); const at = refInput.selectionStart; const text = address(hit.r, hit.c); refInput.setRangeText(text, at, refInput.selectionEnd, 'end'); this.formulaInput.value = refInput.value;
@@ -379,8 +379,9 @@ class GridlineApp {
     options(true);
   }
   autoFit(column = null) {
-    if (!this.editable()) return; const cols = column === null ? [this.selection.c1, Math.min(this.selection.c2, this.selection.c1 + 199)] : [column, column], sizes = new Map();
-    for (let c = cols[0]; c <= cols[1]; c++) { let width = 54; for (const [key, cell] of this.sheet.cells) { const [r, cc] = key.split(',').map(Number); if (cc !== c || this.sheet.mergeAt(r, c)) continue; const text = this.workbook.display(this.sheet, r, c); const font = this.renderer.font(this.sheet.style(r,c)); width = Math.max(width, this.renderer.measureText(text, font) / this.renderer.zoom + 23); } sizes.set(c, Math.min(500, Math.ceil(width))); }
+    if (!this.editable()) return; const cols = column === null ? [this.selection.c1, this.selection.c2] : [column, column], sizes = new Map();
+    for (let c = cols[0]; c <= cols[1]; c++) sizes.set(c,54);
+    for (const [key] of this.sheet.cells) { const [r,c] = key.split(',').map(Number); if (!sizes.has(c) || this.sheet.mergeAt(r,c)) continue; const text = this.workbook.display(this.sheet,r,c), font = this.renderer.font(this.sheet.style(r,c)); sizes.set(c,Math.min(500,Math.max(sizes.get(c),Math.ceil(this.renderer.measureText(text,font) / this.renderer.zoom + 23)))); }
     this.workbook.mutate('Auto-fit columns', () => { for (const [c, width] of sizes) this.sheet.colWidths.set(c, width); });
   }
   dataRange() {
@@ -450,7 +451,8 @@ class GridlineApp {
       case 'clear': if (this.editable()) this.workbook.clear(this.sheet, this.selection); return;
       case 'clear-all': if (this.editable()) this.workbook.clear(this.sheet, this.selection, true); return;
       case 'clear-format': return this.format({ format:'general', bold:false, italic:false, underline:false, wrap:false, align:null, fill:null, color:null, border:false, borderColor:null, bottomBorder:null, fontFamily:'Aptos', fontSize:13 });
-      case 'insert-row': case 'delete-row': case 'insert-column': case 'delete-column': if (this.editable()) { const axis = action.endsWith('row') ? 'row' : 'column'; this.workbook.structuralEdit(this.sheet, axis, axis === 'row' ? this.active.r : this.active.c, action.startsWith('insert') ? 1 : -1); this.toast('Structural edit applied. Chart, filter and conditional-rule metadata on this sheet was reset; Undo restores it.'); } return;
+      case 'insert-column': if (this.editable()) { const {c1,c2} = this.selection; this.workbook.structuralEdit(this.sheet,'column',c1,c2-c1+1); } return;
+      case 'insert-row': case 'delete-row': case 'delete-column': if (this.editable()) { const axis = action.endsWith('row') ? 'row' : 'column'; this.workbook.structuralEdit(this.sheet, axis, axis === 'row' ? this.active.r : this.active.c, action.startsWith('insert') ? 1 : -1); this.toast('Structural edit applied. Chart, filter and conditional-rule metadata on this sheet was reset; Undo restores it.'); } return;
       case 'autosum': return this.autoSum();
       case 'fill-down': if (this.editable()) { const q = this.selection; const source = { ...q, r2: q.r1 }; if (q.r1 === q.r2 && q.r1 > 0) { source.r1 = source.r2 = q.r1 - 1; } this.workbook.fill(this.sheet, source, q); } return;
       case 'fill-right': if (this.editable()) { const q = this.selection, source = { ...q, c2: q.c1 }; if (q.c1 === q.c2 && q.c1 > 0) source.c1 = source.c2 = q.c1 - 1; this.workbook.fill(this.sheet, source, q); } return;
