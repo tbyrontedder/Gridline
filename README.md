@@ -181,3 +181,7 @@ Startup opens the file popup by default. Enable **Reopen last workbook on startu
 Excel export opens a Save As dialog in browsers supporting `showSaveFilePicker` (including desktop Chrome), letting you choose the folder and filename. Cancel leaves the export dialog open. Browsers without this API use their normal download behavior.
 
 While editing a cell, an unmodified arrow key commits the entry and moves in that direction. Invalid entries stay open for correction. Modified arrows and arrows in the formula bar retain text-editing behavior.
+
+Double-click a single cell’s green fill handle to copy its contents and formatting down through contiguous rows with data immediately to its left or right. Formulas adjust relative references. Filling stops at the first row where both neighboring cells are empty; without adjacent data below, nothing is filled. Undo reverses the entire fill.
+
+The Paste dropdown offers **Paste** (contents and formatting), **Paste as Values** (calculated results), and **Paste as Formula** (contents/formulas without formatting). Internal formulas adjust relative references. Copy retains rectangular selections, including empty cells, and draws a dashed border. Paste into one cell to place the block, or into a larger range with matching multiples to repeat it. Existing destination data requires confirmation; Cancel changes nothing and Undo reverses the whole paste. Whole-column/row copies still trim empty tails.

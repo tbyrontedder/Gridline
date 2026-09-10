@@ -24,6 +24,8 @@ body.dark{--surface:#1b2820;--ribbon:#223027;--background:#1b2820;--ink:#dce8df;
 
 #format-pattern { height:auto; min-height:150px; }
 
+.paste-tools .big-tool { height:44px; }
+
 </style>
 </head>
 <body>
@@ -1048,14 +1050,14 @@ class GridRenderer {
     this.rect(0, 0, this.headerW, this.headerH, head); this.text('◢', 28, 19, '#c3d1c8', { fontSize: 15 });
     if (frozen.y) this.rect(this.headerW, this.headerH + frozen.y - 1, this.width, 2, '#b1c8ba');
     if (frozen.x) this.rect(this.headerW + frozen.x - 1, this.headerH, 2, this.height, '#b1c8ba');
-    this.drawSelection(q, '#18835a', true);
-    if (this.copyRange) this.drawSelection(this.copyRange, '#63997d', false);
+    this.drawSelection(q, '#18835a', true, this.copyRange && ['r1','r2','c1','c2'].every(key=>q[key]===this.copyRange[key]));
+    if (this.copyRange) this.drawSelection(this.copyRange, '#176b4a', false, true);
     if (this.fillPreview) this.drawSelection(this.fillPreview, '#18835a', false);
     if (this.backend === 'webgpu') this.flushGPU(); else this.flushCanvas();
     this.lastFrameMs = performance.now() - started; this.onFrame?.();
     if (this.atlas.overflow && this.backend === 'webgpu') this.fallback('Visible glyph set exceeds the bounded atlas capacity.');
   }
-  drawSelection(q, color, handle) {
+  drawSelection(q, color, handle, dashed = false) {
     const sheet = this.workbook.activeSheet, frozen = this.frozenSize();
     const regions = [
       [0, sheet.freezeRows - 1, 0, sheet.freezeCols - 1, [this.headerW, this.headerH, this.headerW + frozen.x, this.headerH + frozen.y]],
@@ -1067,7 +1069,10 @@ class GridRenderer {
       const a = { r: Math.max(q.r1, r1), c: Math.max(q.c1, c1) }, b = { r: Math.min(q.r2, r2), c: Math.min(q.c2, c2) }; if (a.r > b.r || a.c > b.c) continue;
       const p = this.cellRect(a.r, a.c, false), end = this.cellRect(b.r, b.c, false), w = end.x + end.w - p.x, h = end.y + end.h - p.y;
       if (handle && (q.r1 !== q.r2 || q.c1 !== q.c2)) this.rect(p.x, p.y, w, h, color, clip, 0.07);
-      this.outline(p.x, p.y, w, h, color, handle ? 2 : 1, clip);
+      if (dashed) {
+        for (let x=Math.max(p.x,clip[0]);x<Math.min(p.x+w,clip[2]);x+=8) { this.rect(x,p.y,Math.min(4,p.x+w-x),2,color,clip); this.rect(x,p.y+h-2,Math.min(4,p.x+w-x),2,color,clip); }
+        for (let y=Math.max(p.y,clip[1]);y<Math.min(p.y+h,clip[3]);y+=8) { this.rect(p.x,y,2,Math.min(4,p.y+h-y),color,clip); this.rect(p.x+w-2,y,2,Math.min(4,p.y+h-y),color,clip); }
+      } else this.outline(p.x, p.y, w, h, color, handle ? 2 : 1, clip);
       if (handle && b.r === q.r2 && b.c === q.c2) { this.rect(p.x + w - 4, p.y + h - 4, 8, 8, '#ffffff', clip); this.rect(p.x + w - 3, p.y + h - 3, 6, 6, color, clip); }
     }
   }
@@ -1515,7 +1520,7 @@ class GridlineApp {
     this.host.addEventListener('pointermove', e => this.onPointerMove(e));
     this.host.addEventListener('pointerup', e => this.onPointerUp(e));
     this.host.addEventListener('pointercancel', e => this.onPointerUp(e));
-    this.host.addEventListener('dblclick', e => { if (e.target.closest('.chart-card,.scroll-thumb,.cell-editor')) return; const p = this.localPoint(e), hit = this.renderer.hitTest(p.x, p.y); if (hit.colHeader) this.autoFit(this.selection.r1 === 0 && this.selection.r2 === MAX_ROWS - 1 && hit.c >= this.selection.c1 && hit.c <= this.selection.c2 ? null : hit.c); else if (!hit.rowHeader) this.startEdit(); });
+    this.host.addEventListener('dblclick', e => { if (e.target.closest('.chart-card,.scroll-thumb,.cell-editor')) return; const p = this.localPoint(e), hit = this.renderer.hitTest(p.x, p.y), end = this.renderer.cellRect(this.selection.r2,this.selection.c2,false); if (!hit.colHeader && !hit.rowHeader && Math.abs(p.x-end.x-end.w)<7 && Math.abs(p.y-end.y-end.h)<7) { this.errorBoundary(() => this.autoFillDown()); return; } if (hit.colHeader) this.autoFit(this.selection.r1 === 0 && this.selection.r2 === MAX_ROWS - 1 && hit.c >= this.selection.c1 && hit.c <= this.selection.c2 ? null : hit.c); else if (!hit.rowHeader) this.startEdit(); });
     this.host.addEventListener('contextmenu', e => {
       if (e.target.closest('.cell-editor')) return; e.preventDefault(); this.errorBoundary(() => {
         this.commitEdit(false); this.commitFormula();
@@ -1709,7 +1714,7 @@ class GridlineApp {
     const stack = (...items) => `<div class="tool-stack">${items.join('')}</div>`;
     let html = '';
     if (this.tab === 'Home') {
-      html += group('Clipboard', tool('paste','Paste','paste',true,true) + stack(tool('cut','Cut','cut'),tool('copy','Copy','copy')) + stack(tool('format-painter','Format painter','paint')));
+      html += group('Clipboard', `<div class="paste-tools">${tool('paste','Paste','paste',true)}<button data-action="paste-menu" aria-label="Paste options" title="Paste options" style="width:100%;height:16px">⌄</button></div>` + stack(tool('cut','Cut','cut'),tool('copy','Copy','copy')) + stack(tool('format-painter','Format painter','paint')));
       html += group('Font', `<div class="font-tools"><div class="ribbon-row"><select id="font-family" class="font-select" aria-label="Font family"><option>Aptos</option><option>Arial</option><option>Georgia</option><option>Verdana</option><option>Courier New</option></select><select id="font-size" class="font-size" aria-label="Font size">${[8,9,10,11,12,14,16,18,20,24,28,32,36,48].map(s => `<option${s === 10 ? ' selected' : ''}>${s}</option>`).join('')}</select>${mini('font-larger','plus','Increase font size','A⁺')}${mini('font-smaller','plus','Decrease font size','A⁻')}</div><div class="ribbon-row">${mini('bold','','Bold (Ctrl/⌘ B)','<span class="text-bold">B</span>')}${mini('italic','','Italic (Ctrl/⌘ I)','<span class="text-italic">I</span>')}${mini('underline','','Underline (Ctrl/⌘ U)','<span class="text-underline">U</span>')}<span class="ribbon-sep"></span>${mini('borders','border','Toggle cell borders')}<span class="ribbon-sep"></span><button class="mini-tool fill-color-tool" data-action="fill-color" title="Fill color" aria-label="Fill color">${icon('fill')}</button><button class="mini-tool font-color-tool" data-action="text-color" title="Font color" aria-label="Font color">A</button></div></div>`);
       html += group('Alignment', `<div class="font-tools"><div class="ribbon-row">${mini('align-left','alignLeft','Align left')}${mini('align-center','alignCenter','Center')}${mini('align-right','alignRight','Align right')}${tool('wrap','Wrap text','wrap')}</div><div class="ribbon-row">${tool('merge','Merge & center','merge')}</div></div>`);
       html += group('Number', `<div class="font-tools"><div class="ribbon-row"><select id="number-format" class="number-format" aria-label="Number format"><option value="general">General</option><option value="number">Number</option><option value="currency">Currency</option><option value="percent">Percentage</option><option value="date">Short date</option><option value="integer">Integer</option></select></div><div class="ribbon-row">${mini('currency','','Currency','$')}${mini('percent','percent','Percentage')}${mini('number','','Number with separator',',')}<span class="ribbon-sep"></span>${mini('decimal-less','','Decrease decimals','.0←')}${mini('decimal-more','','Increase decimals','→.00')}${mini('format-cells','table','Format cells (Ctrl/⌘ 1)')}</div></div>`);
@@ -1782,6 +1787,18 @@ class GridlineApp {
     $('#format-apply').onclick = () => this.errorBoundary(() => { const decimals = $('#format-decimals'); if (decimals && !decimals.reportValidity()) return; this.workbook.applyStyle(sheet, q, read()); this.closeDialog(); });
     options(true);
   }
+  autoFillDown() {
+    if (!this.editable()) return;
+    const source = {...this.selection}, sheet = this.sheet;
+    if (source.r1 !== source.r2 || source.c1 !== source.c2 || !sheet.raw(source.r1,source.c1)) return;
+    const neighbors = [source.c1-1,source.c2+1].filter(c => c >= 0 && c < MAX_COLS);
+    let last = source.r2;
+    while (last < MAX_ROWS-1 && neighbors.some(c => sheet.raw(last+1,c) !== '')) last++;
+    if (last === source.r2) return;
+    const target = {...source,r2:last};
+    if (sheet.merges.some(m => m.r1<=last && m.r2>=source.r1 && m.c1<=source.c1 && m.c2>=source.c1)) throw new Error('Unmerge these cells before filling down.');
+    this.workbook.fill(sheet,source,target); this.select(target,this.active);
+  }
   autoFit(column = null) {
     if (!this.editable()) return; const cols = column === null ? [this.selection.c1, this.selection.c2] : [column, column], sizes = new Map();
     for (let c = cols[0]; c <= cols[1]; c++) sizes.set(c,54);
@@ -1830,7 +1847,8 @@ class GridlineApp {
       case 'redo': this.workbook.redo(); return;
       case 'copy': return this.copy(false);
       case 'cut': return this.copy(true);
-      case 'paste': return this.paste();
+      case 'paste-menu': return this.menuAt(element,[['paste','Paste'],['paste-values','Paste as Values'],['paste-formula','Paste as Formula']]);
+      case 'paste': case 'paste-values': case 'paste-formula': return this.paste(action);
       case 'format-cells': return this.showFormatCells();
       case 'format-painter': this.paintStyle = structuredClone(style); this.toast('Select a cell or range to apply the current formatting.'); return;
       case 'fill-color': return this.showColorPicker('fill');
@@ -1925,12 +1943,13 @@ class GridlineApp {
     this.setWorkbook(workbook); this.toast(warnings?.[0] || `Opened ${file.name}.`);
   }
   clipboardPayload(cut = false) {
-    const q = this.sheet.populatedRange(this.selection), rows = [], cells = [];
+    const q = this.selection.r2-this.selection.r1===MAX_ROWS-1 || this.selection.c2-this.selection.c1===MAX_COLS-1 ? this.sheet.populatedRange(this.selection) : {...this.selection}, rows = [], cells = [], values = [];
     for (const { r,c } of cellsIn(q)) {
-      if (!rows[r-q.r1]) { rows[r-q.r1] = []; cells[r-q.r1] = []; }
+      if (!rows[r-q.r1]) { rows[r-q.r1] = []; cells[r-q.r1] = []; values[r-q.r1] = []; }
+      const value = this.workbook.value(this.sheet,r,c); values[r-q.r1][c-q.c1] = value instanceof FormulaError ? value.code : value;
       rows[r-q.r1][c-q.c1] = this.workbook.display(this.sheet,r,c); cells[r-q.r1][c-q.c1] = structuredClone({ ...(this.sheet.get(r,c) || { raw:'' }), style: this.sheet.style(r,c) });
     }
-    const text = serializeDelimited(rows,'\t'); this.clipboard = { text, cells, source:{...q}, sheetId:this.sheet.id, cut }; this.renderer.copyRange = {...q}; this.renderer.requestFrame(); return text;
+    const text = serializeDelimited(rows,'\t'); this.clipboard = { text, cells, values, source:{...q}, sheetId:this.sheet.id, cut }; this.renderer.copyRange = {...q}; this.renderer.requestFrame(); return text;
   }
   copyToEvent(e, cut) { this.errorBoundary(() => { e.clipboardData.setData('text/plain',this.clipboardPayload(cut)); e.preventDefault(); }); }
   async copy(cut) {
@@ -1938,20 +1957,36 @@ class GridlineApp {
     try { await navigator.clipboard.writeText(text); this.toast(cut ? 'Cut selection. Paste to move its cells.' : 'Selection copied.'); }
     catch { this.toast('Selection copied inside Gridline. Use Paste, or Ctrl/⌘ C to copy to your system clipboard.'); }
   }
-  async paste() { let text; try { text = await navigator.clipboard.readText(); } catch { text = this.clipboard?.text; } if (text === undefined) { this.toast('Use Ctrl/⌘ V to paste from your clipboard.'); this.host.focus(); return; } this.pasteText(text); }
-  pasteText(text) {
-    if (!this.editable()) return; const internal = this.clipboard?.text === text ? this.clipboard : null, values = internal ? internal.cells : parseDelimited(text,'\t');
-    const r0 = this.active.r, c0 = this.active.c, h = values.length, w = Math.max(...values.map(r => r.length)); if (h*w > MAX_RANGE_CELLS || r0+h > MAX_ROWS || c0+w > MAX_COLS) throw new Error('The pasted range exceeds sheet or operation limits.');
-    this.workbook.transaction(internal?.cut ? 'Move cells' : 'Paste cells', () => {
-      if (internal?.cut) { const source = this.workbook.sheets.find(s => s.id === internal.sheetId); if (source?.protected) throw new Error('The source sheet is read-only.'); if (source) this.workbook.clear(source,internal.source,true); }
-      values.forEach((row,ri) => row.forEach((value,ci) => {
-        const cell = internal ? structuredClone(value) : {raw:String(value)};
-        if (internal && !internal.cut) cell.raw = shiftFormula(cell.raw, r0-internal.source.r1, c0-internal.source.c1);
-        if (internal) { this.workbook.setCell(this.sheet,r0+ri,c0+ci,null); this.workbook.setCell(this.sheet,r0+ri,c0+ci,cell); } else this.workbook.setRaw(this.sheet,r0+ri,c0+ci,cell.raw);
-      }));
+  async paste(mode = 'paste') { let text; try { text = await navigator.clipboard.readText(); } catch { text = this.clipboard?.text; } if (text === undefined) { this.toast('Use Ctrl/⌘ V to paste from your clipboard.'); this.host.focus(); return; } this.pasteText(text,mode); }
+  pasteText(text, mode = 'paste') {
+    if (!this.editable()) return;
+    const sheet = this.sheet, internal = this.clipboard?.text === text ? this.clipboard : null, values = internal ? internal.cells : parseDelimited(text,'\t');
+    const h = values.length, w = Math.max(...values.map(row=>row.length)), q = this.selection;
+    const block = q.r2-q.r1+1 < MAX_ROWS && q.c2-q.c1+1 < MAX_COLS && (q.r1!==q.r2 || q.c1!==q.c2);
+    const r0 = block ? q.r1 : this.active.r, c0 = block ? q.c1 : this.active.c;
+    const height = block ? Math.max(h,q.r2-q.r1+1) : h, width = block ? Math.max(w,q.c2-q.c1+1) : w;
+    if (height%h || width%w) throw new Error('Select one destination cell, or a range whose dimensions are multiples of the copied block.');
+    if (height*width>MAX_RANGE_CELLS || r0+height>MAX_ROWS || c0+width>MAX_COLS) throw new Error('The pasted range exceeds sheet or operation limits.');
+    const target = {r1:r0,c1:c0,r2:r0+height-1,c2:c0+width-1};
+    if (sheet.merges.some(m=>m.r1<=target.r2 && m.r2>=target.r1 && m.c1<=target.c2 && m.c2>=target.c1)) throw new Error('Unmerge destination cells before pasting.');
+    const apply = () => this.errorBoundary(() => {
+      if (sheet.protected) throw new Error('The destination sheet is read-only.');
+      this.workbook.transaction(internal?.cut ? 'Move cells' : 'Paste cells',()=>{
+        if (internal?.cut) { const source = this.workbook.sheets.find(s=>s.id===internal.sheetId); if (source?.protected) throw new Error('The source sheet is read-only.'); if (source) this.workbook.clear(source,internal.source,true); }
+        for (let ri=0;ri<height;ri++) for (let ci=0;ci<width;ci++) {
+          const sr=ri%h, sc=ci%w, cell=internal ? structuredClone(values[sr][sc] || {raw:''}) : {raw:String(values[sr][sc] ?? '')};
+          if (mode==='paste-values') { const value=internal ? internal.values[sr][sc] : cell.raw; cell.raw=value==null ? '' : typeof value==='string' ? "'"+value : String(value); }
+          else if (internal && !internal.cut) cell.raw=shiftFormula(cell.raw,r0+ri-sr-internal.source.r1,c0+ci-sc-internal.source.c1);
+          if (internal && mode==='paste') { this.workbook.setCell(sheet,r0+ri,c0+ci,null); this.workbook.setCell(sheet,r0+ri,c0+ci,cell); }
+          else if (internal || mode==='paste-values') this.workbook.setCell(sheet,r0+ri,c0+ci,{raw:cell.raw});
+          else this.workbook.setRaw(sheet,r0+ri,c0+ci,cell.raw);
+        }
+      });
+      if (internal?.cut) { this.clipboard=null; this.renderer.copyRange=null; }
+      this.select(target,{r:r0,c:c0}); this.host.focus();
     });
-    if (internal?.cut) { this.clipboard = null; this.renderer.copyRange = null; }
-    this.select({r1:r0,c1:c0,r2:r0+h-1,c2:c0+w-1},{r:r0,c:c0}); this.host.focus();
+    const overwrite=[...sheet.cells].some(([key,cell])=>{const [r,c]=key.split(',').map(Number);return cell.raw && r>=target.r1 && r<=target.r2 && c>=target.c1 && c<=target.c2;});
+    if (overwrite) this.confirm('Replace destination data?',`Pasting will replace existing data in ${rangeAddress(target)}.`,apply,'Replace data'); else apply();
   }
   autoSum() {
     if (!this.editable()) return; const q = this.selection;

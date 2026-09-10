@@ -5,7 +5,7 @@
     "backend": "canvas2d",
     "reason": "WebGPU is not exposed by this browser."
   },
-  "passed": 124,
+  "passed": 138,
   "checks": [
     {
       "name": "Standalone app boots without an uncaught exception",
@@ -187,7 +187,7 @@
       "name": "Stress sheet creates 80,008 sparse cells",
       "passed": true,
       "detail": {
-        "wall_ms": 128.65
+        "wall_ms": 131.73
       }
     },
     {
@@ -203,7 +203,7 @@
       "passed": true,
       "detail": {
         "visibleCells": 576,
-        "lastFrameCPUms": 1.5999999046325684,
+        "lastFrameCPUms": 1.7999999523162842,
         "storedCells": 80008,
         "active": {
           "r": 10000,
@@ -827,11 +827,81 @@
       "name": "Invalid dates remain editable instead of moving or saving",
       "passed": true,
       "detail": null
+    },
+    {
+      "name": "Double-click fill handle copies formulas through adjacent data",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Automatic fill stops at the first empty adjoining row",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Automatic fill undoes in one step",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Fill handle does nothing without adjacent data below",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Automatic fill also uses right-hand data and copies literal text",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Block copy preserves trailing empty cells and marks its range",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Paste dropdown offers all three modes",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Paste as Values uses numeric formula results without source formatting",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Paste as Formula shifts references without source formatting",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Paste repeats a block to fill a compatible selection",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Paste asks before overwriting existing data",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Cancel preserves destination contents and formatting",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Confirmed paste copies formulas and formatting",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Paste overwrite undoes as a single action",
+      "passed": true,
+      "detail": null
     }
   ],
   "stressMetrics": {
     "visibleCells": 576,
-    "lastFrameCPUms": 1.5999999046325684,
+    "lastFrameCPUms": 1.7999999523162842,
     "storedCells": 80008,
     "active": {
       "r": 10000,

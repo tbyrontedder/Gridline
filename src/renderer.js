@@ -256,14 +256,14 @@ export class GridRenderer {
     this.rect(0, 0, this.headerW, this.headerH, head); this.text('◢', 28, 19, '#c3d1c8', { fontSize: 15 });
     if (frozen.y) this.rect(this.headerW, this.headerH + frozen.y - 1, this.width, 2, '#b1c8ba');
     if (frozen.x) this.rect(this.headerW + frozen.x - 1, this.headerH, 2, this.height, '#b1c8ba');
-    this.drawSelection(q, '#18835a', true);
-    if (this.copyRange) this.drawSelection(this.copyRange, '#63997d', false);
+    this.drawSelection(q, '#18835a', true, this.copyRange && ['r1','r2','c1','c2'].every(key=>q[key]===this.copyRange[key]));
+    if (this.copyRange) this.drawSelection(this.copyRange, '#176b4a', false, true);
     if (this.fillPreview) this.drawSelection(this.fillPreview, '#18835a', false);
     if (this.backend === 'webgpu') this.flushGPU(); else this.flushCanvas();
     this.lastFrameMs = performance.now() - started; this.onFrame?.();
     if (this.atlas.overflow && this.backend === 'webgpu') this.fallback('Visible glyph set exceeds the bounded atlas capacity.');
   }
-  drawSelection(q, color, handle) {
+  drawSelection(q, color, handle, dashed = false) {
     const sheet = this.workbook.activeSheet, frozen = this.frozenSize();
     const regions = [
       [0, sheet.freezeRows - 1, 0, sheet.freezeCols - 1, [this.headerW, this.headerH, this.headerW + frozen.x, this.headerH + frozen.y]],
@@ -275,7 +275,10 @@ export class GridRenderer {
       const a = { r: Math.max(q.r1, r1), c: Math.max(q.c1, c1) }, b = { r: Math.min(q.r2, r2), c: Math.min(q.c2, c2) }; if (a.r > b.r || a.c > b.c) continue;
       const p = this.cellRect(a.r, a.c, false), end = this.cellRect(b.r, b.c, false), w = end.x + end.w - p.x, h = end.y + end.h - p.y;
       if (handle && (q.r1 !== q.r2 || q.c1 !== q.c2)) this.rect(p.x, p.y, w, h, color, clip, 0.07);
-      this.outline(p.x, p.y, w, h, color, handle ? 2 : 1, clip);
+      if (dashed) {
+        for (let x=Math.max(p.x,clip[0]);x<Math.min(p.x+w,clip[2]);x+=8) { this.rect(x,p.y,Math.min(4,p.x+w-x),2,color,clip); this.rect(x,p.y+h-2,Math.min(4,p.x+w-x),2,color,clip); }
+        for (let y=Math.max(p.y,clip[1]);y<Math.min(p.y+h,clip[3]);y+=8) { this.rect(p.x,y,2,Math.min(4,p.y+h-y),color,clip); this.rect(p.x+w-2,y,2,Math.min(4,p.y+h-y),color,clip); }
+      } else this.outline(p.x, p.y, w, h, color, handle ? 2 : 1, clip);
       if (handle && b.r === q.r2 && b.c === q.c2) { this.rect(p.x + w - 4, p.y + h - 4, 8, 8, '#ffffff', clip); this.rect(p.x + w - 3, p.y + h - 3, 6, 6, color, clip); }
     }
   }

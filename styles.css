@@ -13,3 +13,5 @@ body.dark{--surface:#1b2820;--ribbon:#223027;--background:#1b2820;--ink:#dce8df;
 @media (max-width:520px) { .format-layout { grid-template-columns:115px minmax(0,1fr); gap:12px; } }
 
 #format-pattern { height:auto; min-height:150px; }
+
+.paste-tools .big-tool { height:44px; }
