@@ -167,16 +167,16 @@ function rewriteStructure(source, formulaSheet, targetSheet, axis, at, delta) {
     if (refs[i + 1]?.pair) {
       const end = refs[++i], b = parseAddress(end.value); if (!b) continue;
       const low = Math.min(a[coord], b[coord]), high = Math.max(a[coord], b[coord]);
-      if (delta < 0 && low === high && low === at) { edits.push({ start: t.start, end: end.end, text: '#REF!' }); continue; }
+      if (delta < 0 && low >= at && high < at - delta) { edits.push({ start: t.start, end: end.end, text: '#REF!' }); continue; }
       if (delta > 0) { if (a[coord] >= at) a[coord] += delta; if (b[coord] >= at) b[coord] += delta; }
       else {
         const reversed = a[coord] > b[coord];
-        let lo = low > at ? low - 1 : low, hi = high >= at ? high - 1 : high;
+        let lo = low >= at ? Math.max(at, low + delta) : low, hi = high >= at ? Math.max(at - 1, high + delta) : high;
         a[coord] = reversed ? hi : lo; b[coord] = reversed ? lo : hi;
       }
       edits.push({ ...t, text: format(t, a) }, { ...end, text: format(end, b) }); continue;
     }
-    if (delta < 0 && a[coord] === at) { edits.push({ ...t, text: '#REF!' }); continue; }
+    if (delta < 0 && a[coord] >= at && a[coord] < at - delta) { edits.push({ ...t, text: '#REF!' }); continue; }
     if (a[coord] >= at) a[coord] += delta;
     edits.push({ ...t, text: a.r >= MAX_ROWS || a.c >= MAX_COLS ? '#REF!' : format(t, a) });
   }
@@ -665,13 +665,13 @@ export class Workbook {
   structuralEdit(sheet, axis, at, delta) {
     this.mutate(`${delta > 0 ? 'Insert' : 'Delete'} ${axis}`, () => {
       const coord = axis === 'row' ? 0 : 1, limit = axis === 'row' ? MAX_ROWS : MAX_COLS, next = new Map();
-      for (const [key, cell] of sheet.cells) { const p = key.split(',').map(Number); if (delta < 0 && p[coord] === at) continue; if (p[coord] >= at) p[coord] += delta; if (p[coord] < limit) next.set(keyOf(...p), cell); }
+      for (const [key, cell] of sheet.cells) { const p = key.split(',').map(Number); if (delta < 0 && p[coord] >= at && p[coord] < at - delta) continue; if (p[coord] >= at) p[coord] += delta; if (p[coord] < limit) next.set(keyOf(...p), cell); }
       sheet.cells = next;
-      for (const prop of axis === 'row' ? ['rowHeights','rowStyles'] : ['colWidths','colStyles']) { const mapped = new Map(); for (const [i, value] of sheet[prop]) { if (delta < 0 && i === at) continue; const n = i >= at ? i + delta : i; if (n < limit) mapped.set(n, value); } sheet[prop] = mapped; }
-      if (axis === 'column') sheet.hiddenCols = new Set([...sheet.hiddenCols].filter(i => !(delta < 0 && i === at)).map(i => i >= at ? i + delta : i).filter(i => i < MAX_COLS));
+      for (const prop of axis === 'row' ? ['rowHeights','rowStyles'] : ['colWidths','colStyles']) { const mapped = new Map(); for (const [i, value] of sheet[prop]) { if (delta < 0 && i >= at && i < at - delta) continue; const n = i >= at ? i + delta : i; if (n < limit) mapped.set(n, value); } sheet[prop] = mapped; }
+      if (axis === 'column') sheet.hiddenCols = new Set([...sheet.hiddenCols].filter(i => !(delta < 0 && i >= at && i < at - delta)).map(i => i >= at ? i + delta : i).filter(i => i < MAX_COLS));
       sheet.hiddenRows.clear(); sheet.filters = null; sheet.dataRegion = null;
       const a = axis === 'row' ? 'r1' : 'c1', b = axis === 'row' ? 'r2' : 'c2';
-      sheet.merges = sheet.merges.filter(q => !(delta < 0 && q[a] === at && q[b] === at)).map(q => { const n = { ...q }; if (delta > 0) { if (n[a] >= at) n[a] += delta; if (n[b] >= at) n[b] += delta; } else { if (n[a] > at) n[a]--; if (n[b] >= at) n[b]--; } return n; });
+      sheet.merges = sheet.merges.filter(q => !(delta < 0 && q[a] >= at && q[b] < at - delta)).map(q => { const n = { ...q }; if (delta > 0) { if (n[a] >= at) n[a] += delta; if (n[b] >= at) n[b] += delta; } else { if (n[a] >= at) n[a] = Math.max(at,n[a] + delta); if (n[b] >= at) n[b] = Math.max(at - 1,n[b] + delta); } return n; });
       for (const s of this.sheets) for (const cell of s.cells.values()) cell.raw = rewriteStructure(cell.raw, s.name, sheet.name, axis, at, delta);
       for (const [name, value] of Object.entries(this.names)) this.names[name] = rewriteStructure('=' + value, sheet.name, sheet.name, axis, at, delta).slice(1);
       // Chart/conditional ranges are layout metadata; conservatively discard rules whose coordinates would become stale.

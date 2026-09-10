@@ -211,3 +211,15 @@ test('hidden columns preserve widths, persist, and track structural edits',()=>{
   assert.equal(formatValue(19651,{format:'date',pattern:'m/d'}),'10/19');
   assert.equal(formatValue(19651,{format:'date',pattern:'mmm d'}),'Oct 19');
  });
+
+test('Deleting several columns updates cells, references, styles, merges and undo together',()=>{
+ const w=new Workbook(),s=w.activeSheet;
+ for(let c=0;c<7;c++)w.setRaw(s,0,c,String(c));
+ w.setRaw(s,1,0,'=SUM(B1:F1)');w.setRaw(s,2,0,'=C1');w.setRaw(s,3,0,'=SUM(C1:D1)');w.setRaw(s,4,0,'=SUM(F1:B1)');
+ s.colStyles.set(5,{format:'text'});s.colWidths.set(5,190);s.hiddenCols.add(5);s.hiddenCols.add(2);
+ s.merges=[{r1:6,r2:6,c1:1,c2:5},{r1:7,r2:7,c1:2,c2:3}];
+ w.structuralEdit(s,'column',2,-3);
+ assert.equal(s.raw(0,2),'5');assert.equal(s.raw(1,0),'=SUM(B1:C1)');assert.equal(s.raw(2,0),'=#REF!');assert.equal(s.raw(3,0),'=SUM(#REF!)');assert.equal(s.raw(4,0),'=SUM(C1:B1)');
+ assert.equal(s.colWidths.get(2),190);assert.equal(s.colStyles.get(2).format,'text');assert.deepEqual([...s.hiddenCols],[2]);assert.deepEqual(s.merges,[{r1:6,r2:6,c1:1,c2:2}]);
+ w.undo();assert.equal(w.activeSheet.raw(0,2),'2');assert.equal(w.activeSheet.raw(1,0),'=SUM(B1:F1)');
+});

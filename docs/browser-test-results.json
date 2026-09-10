@@ -5,12 +5,22 @@
     "backend": "canvas2d",
     "reason": "WebGPU is not exposed by this browser."
   },
-  "passed": 96,
+  "passed": 124,
   "checks": [
     {
       "name": "Standalone app boots without an uncaught exception",
       "passed": true,
       "detail": []
+    },
+    {
+      "name": "Startup defaults to the file popup with reopen disabled",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Reopen preference can be enabled",
+      "passed": true,
+      "detail": null
     },
     {
       "name": "Demo total is calculated",
@@ -177,7 +187,7 @@
       "name": "Stress sheet creates 80,008 sparse cells",
       "passed": true,
       "detail": {
-        "wall_ms": 125.39
+        "wall_ms": 128.65
       }
     },
     {
@@ -193,7 +203,7 @@
       "passed": true,
       "detail": {
         "visibleCells": 576,
-        "lastFrameCPUms": 1.5,
+        "lastFrameCPUms": 1.5999999046325684,
         "storedCells": 80008,
         "active": {
           "r": 10000,
@@ -687,11 +697,141 @@
       "name": "File launch tests have no uncaught browser errors",
       "passed": true,
       "detail": []
+    },
+    {
+      "name": "Startup restores only when reopen is enabled: False",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Idle disabled startup preserves previous autosave: False",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Startup restores only when reopen is enabled: True",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Idle disabled startup preserves previous autosave: True",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Find defaults to case-insensitive partial matching",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Match Case filters results immediately",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Entire cells and Match Case combine",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Replace uses both matching options",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Entire-cell matching can ignore case",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Case-insensitive replacement updates both complete matches",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Entire-cell matching includes trailing line breaks",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Find and replacement treat punctuation literally",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Delete removes every highlighted column",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Multi-column delete undoes as one edit",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Excel export prompts for a destination and writes a valid workbook",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Cancelling Save As leaves export dialog open",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Failed Excel save reports the error without claiming success",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Browsers without Save As retain Excel downloads",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "ArrowRight saves the typed value and moves one cell",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "ArrowLeft saves the typed value and moves one cell",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "ArrowDown saves the typed value and moves one cell",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "ArrowUp saves the typed value and moves one cell",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Arrow commit calculates formulas and supports undo",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Undo restores the value before arrow commit",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Arrow commit stays within sheet boundaries",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Invalid dates remain editable instead of moving or saving",
+      "passed": true,
+      "detail": null
     }
   ],
   "stressMetrics": {
     "visibleCells": 576,
-    "lastFrameCPUms": 1.5,
+    "lastFrameCPUms": 1.5999999046325684,
     "storedCells": 80008,
     "active": {
       "r": 10000,
