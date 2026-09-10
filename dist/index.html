@@ -1438,7 +1438,7 @@ const STORAGE_KEY = 'gridline.workbook.v1';
 const REOPEN_KEY = 'gridline.reopen-last.v1';
 const COMMANDS = [
   ['new','New workbook','file','Ctrl/⌘ N'],['open','Open workbook','open','Ctrl/⌘ O'],['save','Save Gridline workbook','save','Ctrl/⌘ S'],['export-xlsx','Export Excel workbook (.xlsx)','export',''],['export-csv','Export current sheet as CSV','export',''],
-  ['hide-columns','Hide columns','table',''],['unhide-columns','Unhide columns','table',''],['unhide-all-columns','Unhide all columns','table',''],['text-to-columns','Text to Columns','table',''],['format-cells','Format cells…','table','Ctrl/⌘ 1'],['find','Find and replace','search','Ctrl/⌘ F'],['chart','Insert chart','chart',''],['functions','Insert function','function',''],['name-manager','Named ranges','name',''],['sort','Sort range','sort',''],['filter','Filter values','filter',''],['conditional','Conditional formatting','conditional',''],['format-table','Format as table','table',''],['freeze-top','Freeze top row','freeze',''],['freeze-first','Freeze first column','freeze',''],['freeze','Freeze at active cell','freeze',''],['unfreeze','Unfreeze panes','freeze',''],['toggle-gridlines','Toggle gridlines','grid',''],['show-formulas','Show formulas','function','Ctrl/⌘ `'],['add-note','Add a cell note','comment',''],['notes','View notes','comment',''],['insert-row','Insert row','insert',''],['insert-column','Insert column','insert',''],['delete-row','Delete row','delete',''],['delete-column','Delete column','delete',''],['add-sheet','Add worksheet','plus',''],['duplicate-sheet','Duplicate worksheet','copy',''],['theme','Toggle dark mode','moon',''],['recalculate','Recalculate workbook','refresh',''],['performance','Renderer diagnostics','grid',''],['print','Print worksheet','print','Ctrl/⌘ P'],['help','Keyboard shortcuts','info','F1']
+  ['hide-columns','Hide columns','table',''],['unhide-columns','Unhide columns','table',''],['unhide-all-columns','Unhide all columns','table',''],['analyze-data','Analyze Data','chart',''],['text-to-columns','Text to Columns','table',''],['format-cells','Format cells…','table','Ctrl/⌘ 1'],['find','Find and replace','search','Ctrl/⌘ F'],['chart','Insert chart','chart',''],['functions','Insert function','function',''],['name-manager','Named ranges','name',''],['sort','Sort range','sort',''],['filter','Filter values','filter',''],['conditional','Conditional formatting','conditional',''],['format-table','Format as table','table',''],['freeze-top','Freeze top row','freeze',''],['freeze-first','Freeze first column','freeze',''],['freeze','Freeze at active cell','freeze',''],['unfreeze','Unfreeze panes','freeze',''],['toggle-gridlines','Toggle gridlines','grid',''],['show-formulas','Show formulas','function','Ctrl/⌘ `'],['add-note','Add a cell note','comment',''],['notes','View notes','comment',''],['insert-row','Insert row','insert',''],['insert-column','Insert column','insert',''],['delete-row','Delete row','delete',''],['delete-column','Delete column','delete',''],['add-sheet','Add worksheet','plus',''],['duplicate-sheet','Duplicate worksheet','copy',''],['theme','Toggle dark mode','moon',''],['recalculate','Recalculate workbook','refresh',''],['performance','Renderer diagnostics','grid',''],['print','Print worksheet','print','Ctrl/⌘ P'],['help','Keyboard shortcuts','info','F1']
 ];
 class GridlineApp {
   constructor() {
@@ -1728,7 +1728,7 @@ class GridlineApp {
     } else if (this.tab === 'Formulas') {
       html = group('Function library',tool('functions','Insert function','function',true)+tool('autosum','AutoSum','sum',true)) + group('Defined names',tool('name-manager','Name manager','name',true)) + group('Formula auditing',tool('show-formulas','Show formulas','function',true)+tool('inspect-formula','Inspect cell','search',true)) + group('Calculation',tool('recalculate','Calculate now','refresh',true));
     } else if (this.tab === 'Data') {
-      html = group('Get data',tool('open','From CSV / XLSX','open',true)+tool('export-csv','Export CSV','export',true)) + group('Sort & filter',tool('sort-asc','Sort A to Z','sort',true)+tool('sort-desc','Sort Z to A','sort',true)+tool('sort','Custom sort','table',true)+tool('filter','Filter','filter',true)+tool('clear-filter','Clear filters','clear',true)) + group('Data tools',tool('text-to-columns','Text to Columns','table',true)+tool('remove-duplicates','Remove duplicates','table',true)+tool('recalculate','Recalculate','refresh',true));
+      html = group('Get data',tool('open','From CSV / XLSX','open',true)+tool('export-csv','Export CSV','export',true)) + group('Sort & filter',tool('sort-asc','Sort A to Z','sort',true)+tool('sort-desc','Sort Z to A','sort',true)+tool('sort','Custom sort','table',true)+tool('filter','Filter','filter',true)+tool('clear-filter','Clear filters','clear',true)) + group('Data tools',tool('analyze-data','Analyze Data','chart',true)+tool('text-to-columns','Text to Columns','table',true)+tool('remove-duplicates','Remove duplicates','table',true)+tool('recalculate','Recalculate','refresh',true));
     } else if (this.tab === 'Review') {
       html = group('Notes',tool('add-note','New note','comment',true)+tool('notes','Show all notes','comment',true)) + group('Protection',tool('protect',this.sheet.protected ? 'Enable editing' : 'Read-only sheet','lock',true)) + group('Workbook',tool('inspect-formula','Inspect active cell','search',true)+tool('about','About Gridline','info',true));
     } else if (this.tab === 'View') {
@@ -1744,7 +1744,7 @@ class GridlineApp {
     $('#sheet-tabs').innerHTML = this.workbook.sheets.map(s => `<button class="sheet-tab ${s.id === this.sheet.id ? 'selected' : ''}" data-sheet="${escapeHTML(s.id)}" title="Double-click to rename · Right-click for options"><span class="sheet-tab-dot" style="background:${/^#[0-9a-f]{6}$/i.test(s.color) ? s.color : '#18835a'}"></span>${escapeHTML(s.name)}</button>`).join('');
   }
   switchSheet(id) {
-    if (id === this.sheet.id) return; if (this.panelType === 'find') this.closePanel(); this.commitEdit(false); this.commitFormula(); this.sheetViews.set(this.sheet.id, { selection: { ...this.selection }, active: { ...this.active }, scrollX: this.renderer.scrollX, scrollY: this.renderer.scrollY });
+    if (id === this.sheet.id) return; if (['find','analyze'].includes(this.panelType)) this.closePanel(); this.commitEdit(false); this.commitFormula(); this.sheetViews.set(this.sheet.id, { selection: { ...this.selection }, active: { ...this.active }, scrollX: this.renderer.scrollX, scrollY: this.renderer.scrollY });
     this.workbook.activeSheetId = id; const view = this.sheetViews.get(id); this.renderer.scrollX = view?.scrollX ?? 0; this.renderer.scrollY = view?.scrollY ?? 0; this.renderer.copyRange = null; this.renderer.syncLayout(); this.anchor = view?.active || { r: 0, c: 0 }; this.select(view?.selection || normalizedRange(this.anchor), this.anchor, false); this.renderTabs(); this.renderCharts(); if (this.panelType === 'notes') this.showNotes(); this.host.focus();
   }
   setZoom(zoom) { this.renderer.setZoom(Math.round(zoom * 10) / 10); $('#zoom-value').textContent = Math.round(this.renderer.zoom * 100) + '%'; $('#zoom-slider').value = this.renderer.zoom * 100; this.positionCharts(); }
@@ -1864,6 +1864,7 @@ class GridlineApp {
       case 'style-heading': return this.format({ fill:'#176b4a', color:'#ffffff', bold:true });
       case 'style-warning': return this.format({ fill:'#fff0d4', color:'#8d6224' });
       case 'merge': return this.mergeSelection();
+      case 'analyze-data': return this.showAnalyzeData();
       case 'text-to-columns': return this.showTextToColumns();
       case 'hide-columns': case 'unhide-columns': case 'unhide-all-columns':
         if (!this.editable()) return;
@@ -2131,6 +2132,26 @@ class GridlineApp {
   }
   openPanel(type,title,body) {this.panelType=type;const panel=$('#side-panel');panel.hidden=false;panel.innerHTML=`<div class="panel-heading"><span>${title}</span><button data-action="close-panel" aria-label="Close panel">×</button></div>${body}`;this.renderer.resize();}
   closePanel() {this.panelType=null;$('#side-panel').hidden=true;this.renderer.resize();this.host.focus();}
+  showAnalyzeData() {
+    const sheet = this.sheet, q = {...this.selection};
+    if (q.c1 !== q.c2) throw new Error('Select one column to analyze.');
+    const whole = q.r1 === q.r2 || q.r1 === 0 && q.r2 === MAX_ROWS-1;
+    if (whole) { q.r1=0; q.r2=MAX_ROWS-1; }
+    this.openPanel('analyze','Analyze Data',`<p class="help-text">${whole ? 'Column '+colName(q.c1) : rangeAddress(q)} · Counts matching displayed values, including filtered rows. Case and spaces are significant.</p><p><label><input id="analyze-header" type="checkbox"${q.r1===0 && sheet.raw(0,q.c1) ? ' checked' : ''}> First row is a header</label></p><button id="analyze-refresh" class="secondary-btn">Refresh</button><p id="analyze-summary" class="help-text"></p><div id="analyze-results"></div>`);
+    const render = () => {
+      const first=q.r1+($('#analyze-header').checked?1:0), end=whole ? sheet.populatedRange(q).r2 : q.r2, last=whole && !sheet.raw(end,q.c1) ? -1 : end, counts=new Map(); let filled=0;
+      for (const [key] of sheet.cells) {
+        const [r,c]=key.split(',').map(Number); if(c!==q.c1 || r<first || r>last) continue;
+        const value=this.workbook.display(sheet,r,c); if(value==='') continue;
+        counts.set(value,(counts.get(value)||0)+1); filled++;
+      }
+      const total=Math.max(0,last-first+1), blank=total-filled, rows=[...counts].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]));
+      $('#analyze-summary').textContent=`${total.toLocaleString()} rows · ${counts.size.toLocaleString()} distinct values · ${blank.toLocaleString()} blank${counts.size>200 ? ' · Showing the 200 most frequent values' : ''}`;
+      const label=$('#analyze-header').checked ? this.workbook.display(sheet,q.r1,q.c1) : 'Value';
+      $('#analyze-results').innerHTML=total ? `<table class="help-table" style="table-layout:fixed"><thead><tr><th style="text-align:left;overflow-wrap:anywhere">${escapeHTML(label || 'Value')}</th><th style="width:75px;text-align:right">Count</th></tr></thead><tbody>${rows.slice(0,200).map(([value,count])=>`<tr><td style="overflow-wrap:anywhere;white-space:pre-wrap">${escapeHTML(value)}</td><td>${count.toLocaleString()}</td></tr>`).join('')}${blank ? `<tr><td><em>(blank)</em></td><td>${blank.toLocaleString()}</td></tr>` : ''}</tbody></table>` : '<p class="empty-panel">No data to analyze.</p>';
+    };
+    $('#analyze-header').onchange=render; $('#analyze-refresh').onclick=()=>this.errorBoundary(render); render();
+  }
   showFind() {
     const scope = {...this.selection}, column = this.active.c, sheetId = this.sheet.id;
     const includes = (r,c) => this.sheet.id === sheetId && ($('#find-scope').value === 'sheet' || ($('#find-scope').value === 'column' ? c === column : r >= scope.r1 && r <= scope.r2 && c >= scope.c1 && c <= scope.c2));
