@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Workbook, Sheet, FormulaError, FUNCTIONS, FormulaParser, address, parseAddress, parseRange, rangeAddress, shiftFormula, cellsIn, formatValue, dateSerial, serialDate, MAX_ROWS, MAX_COLS, keyOf } from '../src/engine.js';
+import { formatHouseholdName, Workbook, Sheet, FormulaError, FUNCTIONS, FormulaParser, address, parseAddress, parseRange, rangeAddress, shiftFormula, cellsIn, formatValue, dateSerial, serialDate, MAX_ROWS, MAX_COLS, keyOf } from '../src/engine.js';
 import { createSampleWorkbook } from '../src/sample.js';
 import { parseDelimited, serializeDelimited, workbookFromCSV, exportCSV, zipStore, unzip, exportXLSX } from '../src/io.js';
 import { AxisLayout } from '../src/renderer.js';
@@ -222,4 +222,18 @@ test('Deleting several columns updates cells, references, styles, merges and und
  assert.equal(s.raw(0,2),'5');assert.equal(s.raw(1,0),'=SUM(B1:C1)');assert.equal(s.raw(2,0),'=#REF!');assert.equal(s.raw(3,0),'=SUM(#REF!)');assert.equal(s.raw(4,0),'=SUM(C1:B1)');
  assert.equal(s.colWidths.get(2),190);assert.equal(s.colStyles.get(2).format,'text');assert.deepEqual([...s.hiddenCols],[2]);assert.deepEqual(s.merges,[{r1:6,r2:6,c1:1,c2:2}]);
  w.undo();assert.equal(w.activeSheet.raw(0,2),'2');assert.equal(w.activeSheet.raw(1,0),'=SUM(B1:F1)');
+});
+
+test('household fill follows the supplied examples and skips unsupported names',()=>{
+  for (const [input,output] of [
+    ['John Smith','SMITH, John'],
+    ['Jim and Jane Smith','SMITH, Jim and Jane'],
+    ['Jim/Jane Smith','SMITH, Jim and Jane'],
+    ['Jim & Jane Smith','SMITH, Jim and Jane'],
+    ['Jim and Jane Smith-Watson','SMITH-WATSON, Jim and Jane'],
+    ['Jim Smith & Ruby Weeks','SMITH, Jim and Ruby Weeks'],
+    ['Jim, Jane, Billy, Sally, Allison Smith','SMITH, Jim and Jane'],
+    ["  Jim   O’Neill  ","O’NEILL, Jim"],
+    ['',null],['Jim',null],['123',null],['Jim Smith Jr.',null],['Jim &',null]
+  ]) assert.equal(formatHouseholdName(input),output,input);
 });

@@ -703,7 +703,22 @@ class Workbook {
   }
 }
 
-return { MAX_ROWS, MAX_COLS, MAX_RANGE_CELLS, keyOf, colName, address, parseAddress, normalizedRange, parseRange, rangeAddress, cellsIn, FormulaError, RangeValue, tokenizeFormula, FormulaParser, shiftFormula, dateSerial, serialDate, FUNCTIONS, CalculationEngine, rawValue, DATE_FORMATS, TIME_FORMATS, CURRENCIES, numberFormatStyle, numberFormatCode, formatValue, formattedInput, Sheet, Workbook };
+// Deliberately limited household-name transformation; ambiguous shapes are left for review.
+function formatHouseholdName(value) {
+  const text = String(value ?? '').trim().replace(/\s+/g, ' ');
+  if (!text || !/^[\p{L}\p{M} .’'&/,\-]+$/u.test(text)) return null;
+  const parts = text.split(/\s*(?:,|&|\/|\band\b)\s*/i);
+  if (parts.some(part => !part)) return null;
+  const first = parts[0].split(' '), last = parts.at(-1).split(' ');
+  const owner = first.length > 1 ? first : last;
+  if (owner.length < 2 || /^(jr\.?|sr\.?|ii|iii|iv)$/i.test(owner.at(-1))) return null;
+  const surname = owner.at(-1);
+  if (first.length > 1) parts[0] = first.slice(0,-1).join(' ');
+  else parts[parts.length-1] = last.slice(0,-1).join(' ');
+  return `${surname.toUpperCase()}, ${parts.slice(0,2).join(' and ')}`;
+}
+
+return { MAX_ROWS, MAX_COLS, MAX_RANGE_CELLS, keyOf, colName, address, parseAddress, normalizedRange, parseRange, rangeAddress, cellsIn, FormulaError, RangeValue, tokenizeFormula, FormulaParser, shiftFormula, dateSerial, serialDate, FUNCTIONS, CalculationEngine, rawValue, DATE_FORMATS, TIME_FORMATS, CURRENCIES, numberFormatStyle, numberFormatCode, formatValue, formattedInput, Sheet, Workbook, formatHouseholdName };
 })();
 
 // ===== renderer.js =====
@@ -1318,7 +1333,7 @@ return { parseDelimited, serializeDelimited, exportCSV, workbookFromCSV, downloa
 
 // ===== app.js =====
 __modules["app"] = (() => {
-const { Workbook, MAX_ROWS, MAX_COLS, MAX_RANGE_CELLS, FUNCTIONS, FormulaError, address, parseAddress, parseRange, normalizedRange, rangeAddress, cellsIn, keyOf, shiftFormula, formatValue, colName, DATE_FORMATS, TIME_FORMATS, CURRENCIES, numberFormatStyle } = __modules["engine"];
+const { formatHouseholdName, Workbook, MAX_ROWS, MAX_COLS, MAX_RANGE_CELLS, FUNCTIONS, FormulaError, address, parseAddress, parseRange, normalizedRange, rangeAddress, cellsIn, keyOf, shiftFormula, formatValue, colName, DATE_FORMATS, TIME_FORMATS, CURRENCIES, numberFormatStyle } = __modules["engine"];
 const { GridRenderer } = __modules["renderer"];
 const { createSampleWorkbook } = __modules["sample"];
 const { parseDelimited, serializeDelimited, exportCSV, workbookFromCSV, downloadFile, exportXLSX, importXLSX } = __modules["io"];
@@ -1355,7 +1370,7 @@ const STORAGE_KEY = 'gridline.workbook.v1';
 const REOPEN_KEY = 'gridline.reopen-last.v1';
 const COMMANDS = [
   ['new','New workbook','file','Ctrl/⌘ N'],['open','Open workbook','open','Ctrl/⌘ O'],['save','Save Gridline workbook','save','Ctrl/⌘ S'],['export-xlsx','Export Excel workbook (.xlsx)','export',''],['export-csv','Export current sheet as CSV','export',''],
-  ['hide-columns','Hide columns','table',''],['unhide-columns','Unhide columns','table',''],['unhide-all-columns','Unhide all columns','table',''],['analyze-data','Analyze Data','chart',''],['text-to-columns','Text to Columns','table',''],['format-cells','Format cells…','table','Ctrl/⌘ 1'],['find','Find and replace','search','Ctrl/⌘ F'],['chart','Insert chart','chart',''],['functions','Insert function','function',''],['name-manager','Named ranges','name',''],['sort','Sort range','sort',''],['filter','Filter values','filter',''],['conditional','Conditional formatting','conditional',''],['format-table','Format as table','table',''],['freeze-top','Freeze top row','freeze',''],['freeze-first','Freeze first column','freeze',''],['freeze','Freeze at active cell','freeze',''],['unfreeze','Unfreeze panes','freeze',''],['toggle-gridlines','Toggle gridlines','grid',''],['show-formulas','Show formulas','function','Ctrl/⌘ `'],['add-note','Add a cell note','comment',''],['notes','View notes','comment',''],['insert-row','Insert row','insert',''],['insert-column','Insert column','insert',''],['delete-row','Delete row','delete',''],['delete-column','Delete column','delete',''],['add-sheet','Add worksheet','plus',''],['duplicate-sheet','Duplicate worksheet','copy',''],['theme','Toggle dark mode','moon',''],['recalculate','Recalculate workbook','refresh',''],['performance','Renderer diagnostics','grid',''],['print','Print worksheet','print','Ctrl/⌘ P'],['help','Keyboard shortcuts','info','F1']
+  ['hide-columns','Hide columns','table',''],['unhide-columns','Unhide columns','table',''],['unhide-all-columns','Unhide all columns','table',''],['analyze-data','Analyze Data','chart',''],['text-to-columns','Text to Columns','table',''],['fill-example','Fill from Example','table',''],['format-cells','Format cells…','table','Ctrl/⌘ 1'],['find','Find and replace','search','Ctrl/⌘ F'],['chart','Insert chart','chart',''],['functions','Insert function','function',''],['name-manager','Named ranges','name',''],['sort','Sort range','sort',''],['filter','Filter values','filter',''],['conditional','Conditional formatting','conditional',''],['format-table','Format as table','table',''],['freeze-top','Freeze top row','freeze',''],['freeze-first','Freeze first column','freeze',''],['freeze','Freeze at active cell','freeze',''],['unfreeze','Unfreeze panes','freeze',''],['toggle-gridlines','Toggle gridlines','grid',''],['show-formulas','Show formulas','function','Ctrl/⌘ `'],['add-note','Add a cell note','comment',''],['notes','View notes','comment',''],['insert-row','Insert row','insert',''],['insert-column','Insert column','insert',''],['delete-row','Delete row','delete',''],['delete-column','Delete column','delete',''],['add-sheet','Add worksheet','plus',''],['duplicate-sheet','Duplicate worksheet','copy',''],['theme','Toggle dark mode','moon',''],['recalculate','Recalculate workbook','refresh',''],['performance','Renderer diagnostics','grid',''],['print','Print worksheet','print','Ctrl/⌘ P'],['help','Keyboard shortcuts','info','F1']
 ];
 class GridlineApp {
   constructor() {
@@ -1646,7 +1661,7 @@ class GridlineApp {
     } else if (this.tab === 'Formulas') {
       html = group('Function library',tool('functions','Insert function','function',true)+tool('autosum','AutoSum','sum',true)) + group('Defined names',tool('name-manager','Name manager','name',true)) + group('Formula auditing',tool('show-formulas','Show formulas','function',true)+tool('inspect-formula','Inspect cell','search',true)) + group('Calculation',tool('recalculate','Calculate now','refresh',true));
     } else if (this.tab === 'Data') {
-      html = group('Get data',tool('open','From CSV / XLSX','open',true)+tool('export-csv','Export CSV','export',true)) + group('Sort & filter',tool('sort-asc','Sort A to Z','sort',true)+tool('sort-desc','Sort Z to A','sort',true)+tool('sort','Custom sort','table',true)+tool('filter','Filter','filter',true)+tool('clear-filter','Clear filters','clear',true)) + group('Data tools',tool('analyze-data','Analyze Data','chart',true)+tool('text-to-columns','Text to Columns','table',true)+tool('remove-duplicates','Remove duplicates','table',true)+tool('recalculate','Recalculate','refresh',true));
+      html = group('Get data',tool('open','From CSV / XLSX','open',true)+tool('export-csv','Export CSV','export',true)) + group('Sort & filter',tool('sort-asc','Sort A to Z','sort',true)+tool('sort-desc','Sort Z to A','sort',true)+tool('sort','Custom sort','table',true)+tool('filter','Filter','filter',true)+tool('clear-filter','Clear filters','clear',true)) + group('Data tools',tool('analyze-data','Analyze Data','chart',true)+tool('text-to-columns','Text to Columns','table',true)+tool('fill-example','Fill from<br>Example','table',true)+tool('remove-duplicates','Remove duplicates','table',true)+tool('recalculate','Recalculate','refresh',true));
     } else if (this.tab === 'Review') {
       html = group('Notes',tool('add-note','New note','comment',true)+tool('notes','Show all notes','comment',true)) + group('Protection',tool('protect',this.sheet.protected ? 'Enable editing' : 'Read-only sheet','lock',true)) + group('Workbook',tool('inspect-formula','Inspect active cell','search',true)+tool('about','About Gridline','info',true));
     } else if (this.tab === 'View') {
@@ -1785,6 +1800,7 @@ class GridlineApp {
       case 'style-warning': return this.format({ fill:'#fff0d4', color:'#8d6224' });
       case 'merge': return this.mergeSelection();
       case 'analyze-data': return this.showAnalyzeData();
+      case 'fill-example': return this.showFillFromExample();
       case 'text-to-columns': return this.showTextToColumns();
       case 'hide-columns': case 'unhide-columns': case 'unhide-all-columns':
         if (!this.editable()) return;
@@ -1973,6 +1989,34 @@ class GridlineApp {
     this.openDialog('Conditional formatting', `<p class="help-text">Apply a live rule to <b>${rangeAddress(this.selection)}</b>. Formatting updates when formula results change.</p><div class="dialog-grid"><button class="file-card" data-rule="bars">${icon('chart')}<span><strong>Data bars</strong><small>Compare the magnitude of each value.</small></span></button><button class="file-card" data-rule="scale">${icon('conditional')}<span><strong>Green color scale</strong><small>Shade cells from low to high.</small></span></button><button class="file-card" data-rule="positive">${icon('percent')}<span><strong>Positive / negative</strong><small>Green gains and red losses.</small></span></button><button class="file-card" data-rule="greater">${icon('check')}<span><strong>Greater than…</strong><small>Highlight values above a threshold.</small></span></button><button class="file-card" data-rule="contains"><span><strong>Specific Text containing</strong><small>Highlight cells containing the text below.</small></span></button><button class="file-card" data-rule="not-contains"><span><strong>Specific Text not containing</strong><small>Highlight nonblank cells without the text below.</small></span></button><button class="file-card" data-rule="blank"><span><strong>Blank</strong><small>Highlight empty cells, including formulas returning empty text.</small></span></button></div><label class="field-label" for="cf-text">Specific text (case-insensitive)</label><input id="cf-text" class="dialog-input" type="text" required><label class="field-label" for="cf-threshold">Threshold for “Greater than”</label><input id="cf-threshold" class="dialog-input" type="number" value="0"><div class="dialog-actions"><button id="clear-rules" class="secondary-btn">Clear sheet rules</button></div>`);
     $$('[data-rule]').forEach(button => button.onclick = () => this.errorBoundary(() => { const type = button.dataset.rule, textRule = type === 'contains' || type === 'not-contains'; if (textRule && !$('#cf-text').reportValidity()) return; const range = {...this.selection}; [...cellsIn(range)]; const rule={type,range,value:textRule ? $('#cf-text').value : Number($('#cf-threshold').value)}; this.workbook.mutate('Conditional formatting',()=>this.sheet.conditionalRules.push(rule)); this.closeDialog(); }));
     $('#clear-rules').onclick=()=>{this.workbook.mutate('Clear conditional rules',()=>this.sheet.conditionalRules=[]);this.closeDialog();};
+  }
+  showFillFromExample() {
+    if (!this.editable()) return;
+    const sheet = this.sheet, q = {...this.selection};
+    if (q.c1 !== q.c2 || q.c1 === MAX_COLS - 1) throw new Error('Select one source column with a destination column to its right.');
+    q.r2 = sheet.populatedRange({...q,r2:q.r1 === q.r2 ? MAX_ROWS-1 : q.r2}).r2;
+    if (q.r2 < q.r1 || q.r2-q.r1+1 > MAX_RANGE_CELLS) throw new Error('Select up to 200,000 source cells, excluding the header.');
+    const source = this.workbook.display(sheet,q.r1,q.c1), example = sheet.raw(q.r1,q.c1+1);
+    this.openDialog('Fill from Example', `<p class="help-text">Household names from <b>${rangeAddress(q)}</b>. Enter an example for <b>${escapeHTML(source)}</b>. This version moves the surname first, uppercases it, and joins names with “and”. Comma-separated lists keep only the first two names. Select data without headers.</p><label class="field-label" for="fill-example">Example result</label><input id="fill-example" class="dialog-input" value="${escapeHTML(example)}" placeholder="SMITH, Jim and Jane"><label class="field-label" for="fill-destination">Destination column, first cell</label><input id="fill-destination" class="dialog-input" value="${address(q.r1,q.c1+1)}"><p class="help-text">Existing entries are kept. Unrecognized names are skipped. Results are fixed text; preview before applying.</p><div id="fill-preview" style="overflow:auto;max-height:260px"></div><div class="dialog-actions"><button class="secondary-btn" data-action="close-dialog">Cancel</button><button id="fill-apply" class="primary-btn">Fill empty cells</button></div>`,620);
+    const read = () => {
+      if (!formatHouseholdName(source) || $('#fill-example').value.trim() !== formatHouseholdName(source)) throw new Error('The example does not match the supported household-name pattern. Use SURNAME, Given names.');
+      const dest = parseAddress($('#fill-destination').value.trim());
+      if (!dest || dest.c === q.c1 || dest.r !== q.r1) throw new Error('Choose another column starting on the same row as the source.');
+      if (sheet.merges.some(m=>m.r1<=q.r2 && m.r2>=q.r1 && (m.c1<=q.c1 && m.c2>=q.c1 || m.c1<=dest.c && m.c2>=dest.c))) throw new Error('Unmerge source and destination cells before filling.');
+      const rows = [];
+      for (let r=q.r1;r<=q.r2;r++) {
+        const input = this.workbook.display(sheet,r,q.c1), output = formatHouseholdName(input), existing = sheet.raw(r,dest.c) !== '';
+        rows.push({r,input,output:existing ? this.workbook.display(sheet,r,dest.c) : output,status:existing ? 'Keep existing' : output ? 'Fill' : 'Skip — unrecognized or blank'});
+      }
+      return {dest,rows};
+    };
+    const preview = () => {
+      try { const {rows} = read(), count = rows.filter(row=>row.status==='Fill').length; $('#fill-preview').innerHTML = `<p>${count} cells to fill · ${rows.length-count} kept or skipped. Preview: first 20 rows.</p><table class="help-table"><thead><tr><th>Source</th><th>Result</th><th>Action</th></tr></thead><tbody>${rows.slice(0,20).map(row=>`<tr><td>${escapeHTML(row.input)}</td><td>${escapeHTML(row.output || '')}</td><td>${row.status}</td></tr>`).join('')}</tbody></table>`; $('#fill-apply').disabled = !count; }
+      catch (error) { $('#fill-preview').textContent = error.message; $('#fill-apply').disabled = true; }
+    };
+    $('#fill-example').oninput = $('#fill-destination').oninput = preview;
+    $('#fill-apply').onclick = () => this.errorBoundary(() => { const {dest,rows} = read(); this.workbook.transaction('Fill from Example',()=>{ for (const row of rows) if (row.status==='Fill') this.workbook.setCell(sheet,row.r,dest.c,{raw:row.output,style:{format:'text'}}); }); this.closeDialog(); this.select({r1:q.r1,r2:q.r2,c1:dest.c,c2:dest.c},dest); });
+    preview();
   }
   showTextToColumns() {
     if (!this.editable()) return;

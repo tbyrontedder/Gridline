@@ -5,7 +5,7 @@
     "backend": "canvas2d",
     "reason": "WebGPU is not exposed by this browser."
   },
-  "passed": 164,
+  "passed": 170,
   "checks": [
     {
       "name": "Standalone app boots without an uncaught exception",
@@ -187,7 +187,7 @@
       "name": "Stress sheet creates 80,008 sparse cells",
       "passed": true,
       "detail": {
-        "wall_ms": 147.35
+        "wall_ms": 131.03
       }
     },
     {
@@ -203,7 +203,7 @@
       "passed": true,
       "detail": {
         "visibleCells": 576,
-        "lastFrameCPUms": 1.7999999523162842,
+        "lastFrameCPUms": 1.4000000953674316,
         "storedCells": 80008,
         "active": {
           "r": 10000,
@@ -1014,6 +1014,36 @@
       "detail": null
     },
     {
+      "name": "Fill from Example uses the adjacent example and previews household results",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Unsupported examples cannot apply",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Fill from Example prevents writing into the source",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Household fill preserves entries, skips unrecognized names, and truncates lists",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Household fill undoes in one step",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Household fill supports redo",
+      "passed": true,
+      "detail": null
+    },
+    {
       "name": "Reopen now explains when no saved copy exists",
       "passed": true,
       "detail": null
@@ -1031,7 +1061,7 @@
   ],
   "stressMetrics": {
     "visibleCells": 576,
-    "lastFrameCPUms": 1.7999999523162842,
+    "lastFrameCPUms": 1.4000000953674316,
     "storedCells": 80008,
     "active": {
       "r": 10000,

@@ -696,3 +696,18 @@ export class Workbook {
     this.transaction('Sort range', () => rows.forEach((row, i) => row.cells.forEach((cell, j) => { cell.raw = shiftFormula(cell.raw, first + i - row.r, 0); this.setCell(sheet, first + i, q.c1 + j, cell); })));
   }
 }
+
+// Deliberately limited household-name transformation; ambiguous shapes are left for review.
+export function formatHouseholdName(value) {
+  const text = String(value ?? '').trim().replace(/\s+/g, ' ');
+  if (!text || !/^[\p{L}\p{M} .’'&/,\-]+$/u.test(text)) return null;
+  const parts = text.split(/\s*(?:,|&|\/|\band\b)\s*/i);
+  if (parts.some(part => !part)) return null;
+  const first = parts[0].split(' '), last = parts.at(-1).split(' ');
+  const owner = first.length > 1 ? first : last;
+  if (owner.length < 2 || /^(jr\.?|sr\.?|ii|iii|iv)$/i.test(owner.at(-1))) return null;
+  const surname = owner.at(-1);
+  if (first.length > 1) parts[0] = first.slice(0,-1).join(' ');
+  else parts[parts.length-1] = last.slice(0,-1).join(' ');
+  return `${surname.toUpperCase()}, ${parts.slice(0,2).join(' and ')}`;
+}
