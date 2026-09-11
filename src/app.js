@@ -215,7 +215,7 @@ class GridlineApp {
   }
   scrollbarDown(e, axis) {
     e.preventDefault(); e.stopPropagation(); const track = e.currentTarget, thumb = $(`#${axis}-thumb`), rect = track.getBoundingClientRect(), vertical = axis === 'v';
-    const length = vertical ? rect.height : rect.width, thumbLength = vertical ? thumb.offsetHeight : thumb.offsetWidth, max = vertical ? Math.max(0, this.renderer.rows.offset(this.renderer.populatedRows) * this.renderer.zoom - this.renderer.height + this.renderer.headerH) : this.renderer.cols.offset(MAX_COLS) * this.renderer.zoom - this.renderer.width + this.renderer.headerW;
+    const length = vertical ? rect.height : rect.width, thumbLength = vertical ? thumb.offsetHeight : thumb.offsetWidth, max = vertical ? Math.max(0, this.renderer.rows.offset(this.renderer.populatedRows) * this.renderer.zoom - this.renderer.height + this.renderer.headerH) : Math.max(0, this.renderer.cols.offset(this.renderer.populatedCols) * this.renderer.zoom - this.renderer.width + this.renderer.headerW);
     const grab = e.target === thumb ? (vertical ? e.clientY - thumb.getBoundingClientRect().top : e.clientX - thumb.getBoundingClientRect().left) : thumbLength / 2;
     const move = event => { const pos = (vertical ? event.clientY - rect.top : event.clientX - rect.left) - grab; this.renderer[vertical ? 'scrollY' : 'scrollX'] = Math.max(0, Math.min(1, pos / Math.max(1, length - thumbLength))) * max; this.renderer.requestFrame(); };
     track.setPointerCapture(e.pointerId); if (e.target !== thumb) move(e);
@@ -225,7 +225,7 @@ class GridlineApp {
   updateScrollbars() {
     for (const axis of ['v','h']) {
       const vertical = axis === 'v', track = $(`#${axis}-scrollbar`), thumb = $(`#${axis}-thumb`), length = vertical ? track.clientHeight : track.clientWidth;
-      const total = (vertical ? this.renderer.rows.offset(this.renderer.populatedRows) : this.renderer.cols.offset(MAX_COLS)) * this.renderer.zoom, view = vertical ? this.renderer.height - this.renderer.headerH : this.renderer.width - this.renderer.headerW, scroll = vertical ? this.renderer.scrollY : this.renderer.scrollX;
+      const total = (vertical ? this.renderer.rows.offset(this.renderer.populatedRows) : this.renderer.cols.offset(this.renderer.populatedCols)) * this.renderer.zoom, view = vertical ? this.renderer.height - this.renderer.headerH : this.renderer.width - this.renderer.headerW, scroll = vertical ? this.renderer.scrollY : this.renderer.scrollX;
       const size = Math.min(length, Math.max(28, length * view / total)), position = (length - size) * scroll / Math.max(1, total - view);
       thumb.style[vertical ? 'height' : 'width'] = size + 'px'; thumb.style[vertical ? 'top' : 'left'] = Math.max(0, Math.min(length - size, position)) + 'px';
     }
