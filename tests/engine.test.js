@@ -258,3 +258,12 @@ test('duplicate values respect range, types, case, formula results and edits',()
   w.setRaw(s,9,1,'unique');
   assert.deepEqual(duplicateValues(w,s,q),new Set(['alpha','unique']));
 });
+
+test('tab colors and No Color survive saved snapshots and appear correctly in XLSX',async()=>{
+  const w=make(); w.activeSheet.color='#123abc'; w.addSheet('No Color'); w.activeSheet.color=null;
+  const restored=Workbook.fromJSON(JSON.parse(JSON.stringify(w.toJSON())));
+  assert.deepEqual(restored.sheets.map(s=>s.color),['#123abc',null]);
+  const parts=await unzip(await exportXLSX(restored)), decoder=new TextDecoder();
+  assert.ok(decoder.decode(parts.get('xl/worksheets/sheet1.xml')).includes('<sheetPr><tabColor rgb="FF123ABC"/></sheetPr>'));
+  assert.ok(!decoder.decode(parts.get('xl/worksheets/sheet2.xml')).includes('tabColor'));
+});
