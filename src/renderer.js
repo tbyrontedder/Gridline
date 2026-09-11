@@ -1,7 +1,7 @@
 /** Instanced WebGPU renderer: solid quads + cached glyph-mask atlas, one ordered draw call.
  * Canvas2D fallback consumes the same retained display list. Coordinates are CSS pixels.
  */
-import { MAX_ROWS, MAX_COLS, colName, FormulaError, formatValue } from './engine.js';
+import { duplicateValues, MAX_ROWS, MAX_COLS, colName, FormulaError, formatValue } from './engine.js';
 const rgbaCache = new Map();
 function rgba(color, alpha = 1) {
   const id = `${color}/${alpha}`; if (rgbaCache.has(id)) return rgbaCache.get(id);
@@ -198,6 +198,7 @@ export class GridRenderer {
     this.visibleRows = rows; this.visibleCols = cols;
     const ruleStats = new Map();
     for (const rule of sheet.conditionalRules) {
+      if (rule.type === 'duplicates') ruleStats.set(rule, duplicateValues(this.workbook, sheet, rule.range));
       if (rule.type === 'bars' || rule.type === 'scale') {
         let min = Infinity, max = -Infinity;
         for (let r = rule.range.r1; r <= rule.range.r2 && r < rule.range.r1 + 10000; r++) for (let c = rule.range.c1; c <= rule.range.c2; c++) { const v = this.workbook.value(sheet, r, c); if (typeof v === 'number') { min = Math.min(min, v); max = Math.max(max, v); } }
@@ -214,6 +215,7 @@ export class GridRenderer {
       const cell = sheet.get(cellR, cellC), style = sheet.style(cellR, cellC), value = this.workbook.value(sheet, cellR, cellC); this.visibleCellCount++;
       for (const rule of sheet.conditionalRules) {
         const q = rule.range; if (r < q.r1 || r > q.r2 || c < q.c1 || c > q.c2) continue;
+        if (rule.type === 'duplicates' && ruleStats.get(rule).has(typeof value === 'string' ? value.toLowerCase() : value)) { style.fill = '#d9eee3'; style.color = '#166444'; }
         if (rule.type === 'positive' && typeof value === 'number') { style.color = value >= 0 ? '#16815c' : '#c14944'; style.bold = true; }
         if (rule.type === 'greater' && typeof value === 'number' && value > rule.value) { style.fill = '#d9eee3'; style.color = '#166444'; }
         if (rule.type === 'blank' && (value == null || value === '') || (rule.type === 'contains' || rule.type === 'not-contains') && value != null && value !== '' && !(value instanceof FormulaError) && String(value).toLowerCase().includes(String(rule.value).toLowerCase()) === (rule.type === 'contains')) { style.fill = '#d9eee3'; style.color = '#166444'; }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatHouseholdName, Workbook, Sheet, FormulaError, FUNCTIONS, FormulaParser, address, parseAddress, parseRange, rangeAddress, shiftFormula, cellsIn, formatValue, dateSerial, serialDate, MAX_ROWS, MAX_COLS, keyOf } from '../src/engine.js';
+import { duplicateValues, formatHouseholdName, Workbook, Sheet, FormulaError, FUNCTIONS, FormulaParser, address, parseAddress, parseRange, rangeAddress, shiftFormula, cellsIn, formatValue, dateSerial, serialDate, MAX_ROWS, MAX_COLS, keyOf } from '../src/engine.js';
 import { createSampleWorkbook } from '../src/sample.js';
 import { parseDelimited, serializeDelimited, workbookFromCSV, exportCSV, zipStore, unzip, exportXLSX } from '../src/io.js';
 import { AxisLayout } from '../src/renderer.js';
@@ -246,4 +246,15 @@ test('XLSX compression preserves every part and falls back without native suppor
   assert.deepEqual(await unzip(compressed),await unzip(stored));
   assert.equal(new DataView(compressed.buffer).getUint16(8,true),8);
   assert.equal(new DataView(stored.buffer).getUint16(8,true),0);
+});
+
+test('duplicate values respect range, types, case, formula results and edits',()=>{
+  const w=make(),s=w.activeSheet,q=parseRange('A1:B10');
+  ['Alpha','ALPHA','7',"'7",'="Alpha"','','=""','=1/0','=1/0','Unique'].forEach((v,r)=>w.setRaw(s,r,0,v));
+  w.setRaw(s,0,1,'=7'); w.setRaw(s,0,2,'Unique');
+  assert.deepEqual(duplicateValues(w,s,q),new Set(['alpha',7]));
+  w.setRaw(s,0,1,'8');
+  assert.deepEqual(duplicateValues(w,s,q),new Set(['alpha']));
+  w.setRaw(s,9,1,'unique');
+  assert.deepEqual(duplicateValues(w,s,q),new Set(['alpha','unique']));
 });

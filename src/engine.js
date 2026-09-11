@@ -711,3 +711,16 @@ export function formatHouseholdName(value) {
   else parts[parts.length-1] = last.slice(0,-1).join(' ');
   return `${surname.toUpperCase()}, ${parts.slice(0,2).join(' and ')}`;
 }
+
+export function duplicateValues(workbook, sheet, range) {
+  const seen = new Set(), duplicates = new Set();
+  for (const key of sheet.cells.keys()) {
+    const [r,c] = key.split(',').map(Number);
+    if (r < range.r1 || r > range.r2 || c < range.c1 || c > range.c2) continue;
+    const value = workbook.value(sheet,r,c);
+    if (value == null || value === '' || value instanceof FormulaError) continue;
+    const normalized = typeof value === 'string' ? value.toLowerCase() : value;
+    if (seen.has(normalized)) duplicates.add(normalized); else seen.add(normalized);
+  }
+  return duplicates;
+}

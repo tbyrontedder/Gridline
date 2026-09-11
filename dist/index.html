@@ -802,7 +802,20 @@ function formatHouseholdName(value) {
   return `${surname.toUpperCase()}, ${parts.slice(0,2).join(' and ')}`;
 }
 
-return { MAX_ROWS, MAX_COLS, MAX_RANGE_CELLS, keyOf, colName, address, parseAddress, normalizedRange, parseRange, rangeAddress, cellsIn, FormulaError, RangeValue, tokenizeFormula, FormulaParser, shiftFormula, dateSerial, serialDate, FUNCTIONS, CalculationEngine, rawValue, DATE_FORMATS, TIME_FORMATS, CURRENCIES, numberFormatStyle, numberFormatCode, formatValue, formattedInput, Sheet, Workbook, formatHouseholdName };
+function duplicateValues(workbook, sheet, range) {
+  const seen = new Set(), duplicates = new Set();
+  for (const key of sheet.cells.keys()) {
+    const [r,c] = key.split(',').map(Number);
+    if (r < range.r1 || r > range.r2 || c < range.c1 || c > range.c2) continue;
+    const value = workbook.value(sheet,r,c);
+    if (value == null || value === '' || value instanceof FormulaError) continue;
+    const normalized = typeof value === 'string' ? value.toLowerCase() : value;
+    if (seen.has(normalized)) duplicates.add(normalized); else seen.add(normalized);
+  }
+  return duplicates;
+}
+
+return { MAX_ROWS, MAX_COLS, MAX_RANGE_CELLS, keyOf, colName, address, parseAddress, normalizedRange, parseRange, rangeAddress, cellsIn, FormulaError, RangeValue, tokenizeFormula, FormulaParser, shiftFormula, dateSerial, serialDate, FUNCTIONS, CalculationEngine, rawValue, DATE_FORMATS, TIME_FORMATS, CURRENCIES, numberFormatStyle, numberFormatCode, formatValue, formattedInput, Sheet, Workbook, formatHouseholdName, duplicateValues };
 })();
 
 // ===== renderer.js =====
@@ -810,7 +823,7 @@ __modules["renderer"] = (() => {
 /** Instanced WebGPU renderer: solid quads + cached glyph-mask atlas, one ordered draw call.
  * Canvas2D fallback consumes the same retained display list. Coordinates are CSS pixels.
  */
-const { MAX_ROWS, MAX_COLS, colName, FormulaError, formatValue } = __modules["engine"];
+const { duplicateValues, MAX_ROWS, MAX_COLS, colName, FormulaError, formatValue } = __modules["engine"];
 const rgbaCache = new Map();
 function rgba(color, alpha = 1) {
   const id = `${color}/${alpha}`; if (rgbaCache.has(id)) return rgbaCache.get(id);
@@ -1007,6 +1020,7 @@ class GridRenderer {
     this.visibleRows = rows; this.visibleCols = cols;
     const ruleStats = new Map();
     for (const rule of sheet.conditionalRules) {
+      if (rule.type === 'duplicates') ruleStats.set(rule, duplicateValues(this.workbook, sheet, rule.range));
       if (rule.type === 'bars' || rule.type === 'scale') {
         let min = Infinity, max = -Infinity;
         for (let r = rule.range.r1; r <= rule.range.r2 && r < rule.range.r1 + 10000; r++) for (let c = rule.range.c1; c <= rule.range.c2; c++) { const v = this.workbook.value(sheet, r, c); if (typeof v === 'number') { min = Math.min(min, v); max = Math.max(max, v); } }
@@ -1023,6 +1037,7 @@ class GridRenderer {
       const cell = sheet.get(cellR, cellC), style = sheet.style(cellR, cellC), value = this.workbook.value(sheet, cellR, cellC); this.visibleCellCount++;
       for (const rule of sheet.conditionalRules) {
         const q = rule.range; if (r < q.r1 || r > q.r2 || c < q.c1 || c > q.c2) continue;
+        if (rule.type === 'duplicates' && ruleStats.get(rule).has(typeof value === 'string' ? value.toLowerCase() : value)) { style.fill = '#d9eee3'; style.color = '#166444'; }
         if (rule.type === 'positive' && typeof value === 'number') { style.color = value >= 0 ? '#16815c' : '#c14944'; style.bold = true; }
         if (rule.type === 'greater' && typeof value === 'number' && value > rule.value) { style.fill = '#d9eee3'; style.color = '#166444'; }
         if (rule.type === 'blank' && (value == null || value === '') || (rule.type === 'contains' || rule.type === 'not-contains') && value != null && value !== '' && !(value instanceof FormulaError) && String(value).toLowerCase().includes(String(rule.value).toLowerCase()) === (rule.type === 'contains')) { style.fill = '#d9eee3'; style.color = '#166444'; }
@@ -2079,7 +2094,7 @@ class GridlineApp {
   }
   showConditional() {
     if (!this.editable()) return;
-    this.openDialog('Conditional formatting', `<p class="help-text">Apply a live rule to <b>${rangeAddress(this.selection)}</b>. Formatting updates when formula results change.</p><div class="dialog-grid"><button class="file-card" data-rule="bars">${icon('chart')}<span><strong>Data bars</strong><small>Compare the magnitude of each value.</small></span></button><button class="file-card" data-rule="scale">${icon('conditional')}<span><strong>Green color scale</strong><small>Shade cells from low to high.</small></span></button><button class="file-card" data-rule="positive">${icon('percent')}<span><strong>Positive / negative</strong><small>Green gains and red losses.</small></span></button><button class="file-card" data-rule="greater">${icon('check')}<span><strong>Greater than…</strong><small>Highlight values above a threshold.</small></span></button><button class="file-card" data-rule="contains"><span><strong>Specific Text containing</strong><small>Highlight cells containing the text below.</small></span></button><button class="file-card" data-rule="not-contains"><span><strong>Specific Text not containing</strong><small>Highlight nonblank cells without the text below.</small></span></button><button class="file-card" data-rule="blank"><span><strong>Blank</strong><small>Highlight empty cells, including formulas returning empty text.</small></span></button></div><label class="field-label" for="cf-text">Specific text (case-insensitive)</label><input id="cf-text" class="dialog-input" type="text" required><label class="field-label" for="cf-threshold">Threshold for “Greater than”</label><input id="cf-threshold" class="dialog-input" type="number" value="0"><div class="dialog-actions"><button id="clear-rules" class="secondary-btn">Clear sheet rules</button></div>`);
+    this.openDialog('Conditional formatting', `<p class="help-text">Apply a live rule to <b>${rangeAddress(this.selection)}</b>. Formatting updates when formula results change.</p><div class="dialog-grid"><button class="file-card" data-rule="bars">${icon('chart')}<span><strong>Data bars</strong><small>Compare the magnitude of each value.</small></span></button><button class="file-card" data-rule="scale">${icon('conditional')}<span><strong>Green color scale</strong><small>Shade cells from low to high.</small></span></button><button class="file-card" data-rule="positive">${icon('percent')}<span><strong>Positive / negative</strong><small>Green gains and red losses.</small></span></button><button class="file-card" data-rule="greater">${icon('check')}<span><strong>Greater than…</strong><small>Highlight values above a threshold.</small></span></button><button class="file-card" data-rule="contains"><span><strong>Specific Text containing</strong><small>Highlight cells containing the text below.</small></span></button><button class="file-card" data-rule="not-contains"><span><strong>Specific Text not containing</strong><small>Highlight nonblank cells without the text below.</small></span></button><button class="file-card" data-rule="duplicates"><span><strong>Duplicate values</strong><small>Highlight repeated values in the selection. Ignores case and blanks.</small></span></button><button class="file-card" data-rule="blank"><span><strong>Blank</strong><small>Highlight empty cells, including formulas returning empty text.</small></span></button></div><label class="field-label" for="cf-text">Specific text (case-insensitive)</label><input id="cf-text" class="dialog-input" type="text" required><label class="field-label" for="cf-threshold">Threshold for “Greater than”</label><input id="cf-threshold" class="dialog-input" type="number" value="0"><div class="dialog-actions"><button id="clear-rules" class="secondary-btn">Clear sheet rules</button></div>`);
     $$('[data-rule]').forEach(button => button.onclick = () => this.errorBoundary(() => { const type = button.dataset.rule, textRule = type === 'contains' || type === 'not-contains'; if (textRule && !$('#cf-text').reportValidity()) return; const range = {...this.selection}; [...cellsIn(range)]; const rule={type,range,value:textRule ? $('#cf-text').value : Number($('#cf-threshold').value)}; this.workbook.mutate('Conditional formatting',()=>this.sheet.conditionalRules.push(rule)); this.closeDialog(); }));
     $('#clear-rules').onclick=()=>{this.workbook.mutate('Clear conditional rules',()=>this.sheet.conditionalRules=[]);this.closeDialog();};
   }
