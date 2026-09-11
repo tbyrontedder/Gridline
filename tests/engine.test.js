@@ -59,7 +59,7 @@ test('CSV parser handles escaped quotes, multiline values, delimiters and BOM',(
 test('TSV serialization round-trips quoted content',()=>{const rows=[['a\tb','say "hi"','line1\nline2'],['1','2','3']];assert.deepEqual(parseDelimited(serializeDelimited(rows,'\t'),'\t'),rows);});
 test('CSV input neutralizes formula injection',()=>{const w=workbookFromCSV('Header\n=1+1');assert.equal(w.activeSheet.raw(1,0),"'=1+1");assert.equal(w.value(w.activeSheet,1,0),'=1+1');assert.ok(exportCSV(w).includes("'=1+1"));});
 test('ZIP writer/reader round-trip and CRC integrity',async()=>{const zip=zipStore({'a.txt':'hello','folder/b.txt':'world'});const parts=await unzip(zip);assert.equal(new TextDecoder().decode(parts.get('a.txt')),'hello');const corrupt=zip.slice();corrupt[35]^=1;await assert.rejects(()=>unzip(corrupt),/integrity/);});
-test('XLSX output has all sheets, formulas, and styles',async()=>{const w=createSampleWorkbook(),parts=await unzip(exportXLSX(w));assert.ok(parts.has('[Content_Types].xml'));assert.ok(parts.has('xl/styles.xml'));assert.ok(parts.has('xl/worksheets/sheet3.xml'));const xml=new TextDecoder().decode(parts.get('xl/worksheets/sheet1.xml'));assert.ok(xml.includes('<f>SUM(G12:G19)</f>'));assert.ok(xml.includes('2187000'));});
+test('XLSX output has all sheets, formulas, and styles',async()=>{const w=createSampleWorkbook(),parts=await unzip(await exportXLSX(w));assert.ok(parts.has('[Content_Types].xml'));assert.ok(parts.has('xl/styles.xml'));assert.ok(parts.has('xl/worksheets/sheet3.xml'));const xml=new TextDecoder().decode(parts.get('xl/worksheets/sheet1.xml'));assert.ok(xml.includes('<f>SUM(G12:G19)</f>'));assert.ok(xml.includes('2187000'));});
 test('axis prefix positions, binary search, and hidden rows',()=>{const axis=new AxisLayout(1000,27,new Map([[1,40],[9,20]]),new Set([3,4]));assert.equal(axis.offset(2),67);assert.equal(axis.offset(5),94);assert.equal(axis.find(94),5);assert.equal(axis.offset(1000),26952);});
 test('range operations have explicit bounds',()=>assert.throws(()=>[...cellsIn(parseRange('A1:XFD1048576'))],/limit/));
 test('date conversion round-trips contemporary dates',()=>{const date=new Date(Date.UTC(2026,8,6));assert.equal(serialDate(dateSerial(date)).getTime(),date.getTime());});
@@ -121,7 +121,7 @@ test('XLSX includes sparse row and column formats, even with no stored cells', a
   const wb = make(), s = wb.activeSheet;
   wb.applyStyle(s,{r1:0,r2:MAX_ROWS-1,c1:1,c2:1},{format:'date',pattern:'yyyy-mm-dd'});
   wb.applyStyle(s,{r1:3,r2:3,c1:0,c2:MAX_COLS-1},{format:'currency',currency:'GBP',decimals:2});
-  const parts = await unzip(exportXLSX(wb)), decode = name => new TextDecoder().decode(parts.get(name));
+  const parts = await unzip(await exportXLSX(wb)), decode = name => new TextDecoder().decode(parts.get(name));
   assert.match(decode('xl/worksheets/sheet1.xml'), /<col min="2" max="2" style="\d+"\/>/);
   assert.match(decode('xl/worksheets/sheet1.xml'), /<row r="4" s="\d+" customFormat="1">/);
   assert.match(decode('xl/styles.xml'), /yyyy-mm-dd/); assert.match(decode('xl/styles.xml'), /£/);
@@ -140,7 +140,7 @@ test('decimal controls on integer formats are retained in XLSX', async () => {
   const wb = make(), s = wb.activeSheet;
   wb.setRaw(s,0,0,'12.34'); wb.applyStyle(s,parseRange('A1'),{format:'integer',decimals:2});
   assert.equal(wb.display(s,0,0),'12.34');
-  const parts = await unzip(exportXLSX(wb));
+  const parts = await unzip(await exportXLSX(wb));
   assert.match(new TextDecoder().decode(parts.get('xl/styles.xml')), /formatCode="#,##0.00"/);
 });
 
@@ -236,4 +236,14 @@ test('household fill follows the supplied examples and skips unsupported names',
     ["  Jim   O’Neill  ","O’NEILL, Jim"],
     ['',null],['Jim',null],['123',null],['Jim Smith Jr.',null],['Jim &',null]
   ]) assert.equal(formatHouseholdName(input),output,input);
+});
+
+test('XLSX compression preserves every part and falls back without native support', async t => {
+  const w=createSampleWorkbook(), compressed=await exportXLSX(w);
+  t.mock.method(globalThis,'CompressionStream',function(){throw new TypeError('Unsupported format');});
+  const stored=await exportXLSX(w);
+  assert.ok(compressed.length < stored.length / 2);
+  assert.deepEqual(await unzip(compressed),await unzip(stored));
+  assert.equal(new DataView(compressed.buffer).getUint16(8,true),8);
+  assert.equal(new DataView(stored.buffer).getUint16(8,true),0);
 });

@@ -122,12 +122,12 @@ with sync_playwright() as p:
     check('Find and replace edits matching cells', val(2,0)=='Gamma')
     page.locator('[data-action="close-panel"]').click()
     # Verify actual XML parsing, all formulas, styles, dimensions and workbook names.
-    roundtrip = page.evaluate('''async()=>{const original=Gridline.createSampleWorkbook();const bytes=Gridline.exportXLSX(original);const {workbook:restored,warnings}=await Gridline.importXLSX(bytes,'Roundtrip');let mismatches=[];for(let i=0;i<original.sheets.length;i++){const a=original.sheets[i],b=restored.sheets[i];for(const [key,cell]of a.cells){if(!cell.raw)continue;const[r,c]=key.split(',').map(Number);const av=original.value(a,r,c),bv=restored.value(b,r,c);if(String(av)!==String(bv))mismatches.push(a.name+'!'+key+': '+av+' != '+bv);}}return {bytes:bytes.length,sheets:restored.sheets.length,mismatches,mergeCount:restored.sheets[0].merges.length,originalMerges:original.sheets[0].merges.length,freeze:restored.sheets[1].freezeRows,name:restored.names.COST_RATIO,style:restored.sheets[0].get(1,1).style,columns:restored.sheets[0].colWidths.size,warnings};}''')
+    roundtrip = page.evaluate('''async()=>{const original=Gridline.createSampleWorkbook();const bytes=await Gridline.exportXLSX(original);const {workbook:restored,warnings}=await Gridline.importXLSX(bytes,'Roundtrip');let mismatches=[];for(let i=0;i<original.sheets.length;i++){const a=original.sheets[i],b=restored.sheets[i];for(const [key,cell]of a.cells){if(!cell.raw)continue;const[r,c]=key.split(',').map(Number);const av=original.value(a,r,c),bv=restored.value(b,r,c);if(String(av)!==String(bv))mismatches.push(a.name+'!'+key+': '+av+' != '+bv);}}return {bytes:bytes.length,sheets:restored.sheets.length,mismatches,mergeCount:restored.sheets[0].merges.length,originalMerges:original.sheets[0].merges.length,freeze:restored.sheets[1].freezeRows,name:restored.names.COST_RATIO,style:restored.sheets[0].get(1,1).style,columns:restored.sheets[0].colWidths.size,warnings};}''')
     check('XLSX export/import round-trip preserves calculated values', roundtrip['sheets']==3 and not roundtrip['mismatches'], roundtrip)
     check('XLSX round-trip preserves basic workbook structures', roundtrip['mergeCount']==roundtrip['originalMerges'] and roundtrip['freeze']==1 and roundtrip['name'] and roundtrip['columns']>0)
-    custom_dates = page.evaluate("""async()=>{const w=new Gridline.Workbook(),s=w.activeSheet;const formats=['mm-dd-yy','[$-409]m/d/yyyy','m/d/yy h:mm','hh:mm:ss'];formats.forEach((format,c)=>w.setCell(s,0,c,{raw:'45292.5625',style:{format}}));const imported=(await Gridline.importXLSX(Gridline.exportXLSX(w))).workbook;return formats.map((_,c)=>imported.display(imported.activeSheet,0,c));}""")
+    custom_dates = page.evaluate("""async()=>{const w=new Gridline.Workbook(),s=w.activeSheet;const formats=['mm-dd-yy','[$-409]m/d/yyyy','m/d/yy h:mm','hh:mm:ss'];formats.forEach((format,c)=>w.setCell(s,0,c,{raw:'45292.5625',style:{format}}));const imported=(await Gridline.importXLSX(await Gridline.exportXLSX(w))).workbook;return formats.map((_,c)=>imported.display(imported.activeSheet,0,c));}""")
     check('Excel custom date and time formats apply automatically on import', custom_dates == ['01-01-24','1/1/2024','1/1/24 13:30','13:30:00'], custom_dates)
-    encoded = page.evaluate("btoa(Array.from(Gridline.exportXLSX(Gridline.createSampleWorkbook()),v=>String.fromCharCode(v)).join(''))")
+    encoded = page.evaluate("async()=>btoa(Array.from(await Gridline.exportXLSX(Gridline.createSampleWorkbook()),v=>String.fromCharCode(v)).join(''))")
     original_zip = zipfile.ZipFile(io.BytesIO(base64.b64decode(encoded)))
     def repack(date1904=False):
         output = io.BytesIO()
@@ -217,7 +217,7 @@ with sync_playwright() as p:
       const expected = [[999,1],[2,4],[0,3],[0,5],[1,5],[3,5]].map(([r,c])=>w.display(s,r,c));
       gridline.persist();
       const native = Gridline.Workbook.fromJSON(JSON.parse(localStorage.getItem('gridline.workbook.v1')));
-      const imported = (await Gridline.importXLSX(Gridline.exportXLSX(w))).workbook;
+      const imported = (await Gridline.importXLSX(await Gridline.exportXLSX(w))).workbook;
       const results = [native,imported].map(book => {
         const sheet = book.activeSheet, display = [[999,1],[2,4],[0,3],[0,5],[1,5],[3,5]].map(([r,c])=>book.display(sheet,r,c));
         book.setRaw(sheet,5000,1,'2027-01-02'); book.setRaw(sheet,5000,3,'09:15'); book.setRaw(sheet,5000,5,'10.5');
@@ -289,7 +289,7 @@ with sync_playwright() as p:
     check('Text to Columns asks before replacing neighboring data', page.locator('#confirm-action').count()==1 and val(0,3)=='Changed')
     page.locator('#confirm-action').click()
     check('Confirmed split writes to chosen destination', val(0,3)==1 and val(0,4)=='hello')
-    hidden_roundtrip=page.evaluate("""async()=>{const w=new Gridline.Workbook();w.activeSheet.hiddenCols.add(2);w.activeSheet.colWidths.set(2,144);const restored=(await Gridline.importXLSX(Gridline.exportXLSX(w))).workbook;return restored.activeSheet.hiddenCols.has(2)&&Math.abs(restored.activeSheet.colWidths.get(2)-144)<0.01;}""")
+    hidden_roundtrip=page.evaluate("""async()=>{const w=new Gridline.Workbook();w.activeSheet.hiddenCols.add(2);w.activeSheet.colWidths.set(2,144);const restored=(await Gridline.importXLSX(await Gridline.exportXLSX(w))).workbook;return restored.activeSheet.hiddenCols.has(2)&&Math.abs(restored.activeSheet.colWidths.get(2)-144)<0.01;}""")
     check('XLSX round-trip preserves hidden columns and widths',hidden_roundtrip)
     check('Browser interactions produce no uncaught JavaScript errors', not errors, errors)
     goto('J1')
@@ -433,7 +433,7 @@ with sync_playwright() as p:
     page.evaluate("testFileLaunch({files:[{getFile:async()=>new File(['Name,Year\\nExample,1987'],'launch.csv',{type:'text/csv'})}]})")
     page.wait_for_function('gridline.workbook.title === "launch"')
     check('Chrome file launch opens CSV with the existing importer', val(1,0)=='Example' and val(1,1)==1987)
-    page.evaluate("""()=>{const w=new Gridline.Workbook();w.setRaw(w.activeSheet,0,0,'From Excel');const bytes=Gridline.exportXLSX(w);testFileLaunch({files:[{getFile:async()=>new File([bytes],'launch-excel.xlsx')}]});}""")
+    page.evaluate("""async()=>{const w=new Gridline.Workbook();w.setRaw(w.activeSheet,0,0,'From Excel');const bytes=await Gridline.exportXLSX(w);testFileLaunch({files:[{getFile:async()=>new File([bytes],'launch-excel.xlsx')}]});}""")
     page.wait_for_function('gridline.workbook.title === "launch-excel"')
     check('Chrome file launch opens XLSX with the existing importer',val(0,0)=='From Excel')
     page.evaluate("testFileLaunch({files:[{getFile:async()=>{throw new Error('File permission test');}}]})")

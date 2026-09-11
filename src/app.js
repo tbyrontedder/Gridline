@@ -435,9 +435,9 @@ class GridlineApp {
           let handle;
           try { handle = await window.showSaveFilePicker({suggestedName:name,types:[{description:'Excel workbook',accept:{[type]:['.xlsx']}}]}); }
           catch (error) { if (error.name === 'AbortError') return; throw error; }
-          const blob = new Blob([exportXLSX(workbook)],{type});
+          const blob = new Blob([await exportXLSX(workbook)],{type});
           await blob.stream().pipeTo(await handle.createWritable());
-        } else downloadFile(name,exportXLSX(workbook),type);
+        } else downloadFile(name,await exportXLSX(workbook),type);
         this.closeDialog(); this.toast('XLSX exported. Charts, notes, and conditional rules remain in the .gridline format.'); return;
       }
       case 'export-csv': downloadFile(this.sheet.name + '.csv', exportCSV(this.workbook), 'text/csv;charset=utf-8'); this.closeDialog(); this.toast('Current sheet exported as CSV values.'); return;

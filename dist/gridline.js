@@ -1168,15 +1168,15 @@ const encoder = new TextEncoder(), decoder = new TextDecoder();
 const crcTable = new Uint32Array(256);
 for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; crcTable[n] = c >>> 0; }
 function crc32(bytes) { let crc = 0xffffffff; for (const b of bytes) crc = crcTable[(crc ^ b) & 255] ^ (crc >>> 8); return (crc ^ 0xffffffff) >>> 0; }
-function zipStore(files) {
+function zipStore(files, compressed = {}) {
   const local = [], central = []; let offset = 0;
   for (const [name, source] of Object.entries(files)) {
-    const path = encoder.encode(name), data = typeof source === 'string' ? encoder.encode(source) : source, crc = crc32(data);
+    const path = encoder.encode(name), data = typeof source === 'string' ? encoder.encode(source) : source, crc = crc32(data), packed = compressed[name] || data, method = compressed[name] ? 8 : 0;
     const head = new Uint8Array(30 + path.length), v = new DataView(head.buffer);
-    v.setUint32(0, 0x04034b50, true); v.setUint16(4, 20, true); v.setUint16(6, 0x800, true); v.setUint16(12, 0x21, true); v.setUint32(14, crc, true); v.setUint32(18, data.length, true); v.setUint32(22, data.length, true); v.setUint16(26, path.length, true); head.set(path, 30);
+    v.setUint32(0, 0x04034b50, true); v.setUint16(4, 20, true); v.setUint16(6, 0x800, true); v.setUint16(8, method, true); v.setUint16(12, 0x21, true); v.setUint32(14, crc, true); v.setUint32(18, packed.length, true); v.setUint32(22, data.length, true); v.setUint16(26, path.length, true); head.set(path, 30);
     const cd = new Uint8Array(46 + path.length), d = new DataView(cd.buffer);
-    d.setUint32(0, 0x02014b50, true); d.setUint16(4, 20, true); d.setUint16(6, 20, true); d.setUint16(8, 0x800, true); d.setUint16(14, 0x21, true); d.setUint32(16, crc, true); d.setUint32(20, data.length, true); d.setUint32(24, data.length, true); d.setUint16(28, path.length, true); d.setUint32(42, offset, true); cd.set(path, 46);
-    local.push(head, data); central.push(cd); offset += head.length + data.length;
+    d.setUint32(0, 0x02014b50, true); d.setUint16(4, 20, true); d.setUint16(6, 20, true); d.setUint16(8, 0x800, true); d.setUint16(10, method, true); d.setUint16(14, 0x21, true); d.setUint32(16, crc, true); d.setUint32(20, packed.length, true); d.setUint32(24, data.length, true); d.setUint16(28, path.length, true); d.setUint32(42, offset, true); cd.set(path, 46);
+    local.push(head, packed); central.push(cd); offset += head.length + packed.length;
   }
   const centralLength = central.reduce((n, b) => n + b.length, 0), end = new Uint8Array(22), ev = new DataView(end.buffer);
   ev.setUint32(0, 0x06054b50, true); ev.setUint16(8, central.length, true); ev.setUint16(10, central.length, true); ev.setUint32(12, centralLength, true); ev.setUint32(16, offset, true);
@@ -1233,7 +1233,7 @@ function styleTable(workbook) {
   const xml = xmlHeader + `<styleSheet xmlns="${spreadsheetNS}"><numFmts count="${formats.size}">${[...formats].map(([code, id]) => `<numFmt numFmtId="${id}" formatCode="${escapeXML(code)}"/>`).join('')}</numFmts><fonts count="${fonts.length}">${fonts.join('')}</fonts><fills count="${fills.length}">${fills.join('')}</fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border>${['left','right','top','bottom'].map(x => `<${x} style="thin"><color rgb="FFD4DFD8"/></${x}>`).join('')}<diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${xfs.length}">${xfs.join('')}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
   return { xml, idFor };
 }
-function exportXLSX(workbook) {
+async function exportXLSX(workbook) {
   const files = {}, styles = styleTable(workbook);
   files['[Content_Types].xml'] = xmlHeader + `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${workbook.sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`;
   files['_rels/.rels'] = xmlHeader + `<Relationships xmlns="${packageRelNS}"><Relationship Id="rId1" Type="${relationshipNS}/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
@@ -1258,7 +1258,16 @@ function exportXLSX(workbook) {
     const pane = sheet.freezeRows || sheet.freezeCols ? `<pane xSplit="${sheet.freezeCols}" ySplit="${sheet.freezeRows}" topLeftCell="${address(sheet.freezeRows, sheet.freezeCols)}" activePane="${sheet.freezeRows && sheet.freezeCols ? 'bottomRight' : sheet.freezeRows ? 'bottomLeft' : 'topRight'}" state="frozen"/>` : '';
     files[`xl/worksheets/sheet${i + 1}.xml`] = xmlHeader + `<worksheet xmlns="${spreadsheetNS}"><dimension ref="A1:${address(sheet.usedRange().r2, sheet.usedRange().c2)}"/><sheetViews><sheetView workbookViewId="0" showGridLines="${sheet.gridlines ? 1 : 0}">${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="20.25"/>${sheet.colWidths.size || sheet.colStyles.size || sheet.hiddenCols.size ? '<cols>' + [...new Set([...sheet.colWidths.keys(), ...sheet.colStyles.keys(), ...sheet.hiddenCols])].sort((a,b) => a-b).map(c => `<col min="${c + 1}" max="${c + 1}"${sheet.colWidths.has(c) ? ` width="${Math.max(1, (sheet.colWidths.get(c) - 5) / 7)}" customWidth="1"` : ''}${sheet.hiddenCols.has(c) ? ' hidden="1"' : ''}${sheet.colStyles.has(c) ? ` style="${styles.idFor(sheet.colStyles.get(c))}"` : ''}/>`).join('') + '</cols>' : ''}<sheetData>${rowXML}</sheetData>${sheet.filters ? `<autoFilter ref="${address(sheet.filters.range.r1, sheet.filters.range.c1)}:${address(sheet.filters.range.r2, sheet.filters.range.c2)}"/>` : ''}${sheet.merges.length ? `<mergeCells count="${sheet.merges.length}">${sheet.merges.map(m => `<mergeCell ref="${address(m.r1, m.c1)}:${address(m.r2, m.c2)}"/>`).join('')}</mergeCells>` : ''}<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`;
   });
-  return zipStore(files);
+  const compressed = {};
+  // Native raw DEFLATE is ZIP method 8. Older browsers retain the valid stored ZIP path.
+  let supported = false;
+  try { new CompressionStream('deflate-raw'); supported = true; } catch {}
+  if (supported) for (const [name, source] of Object.entries(files)) {
+    const data = encoder.encode(source);
+    const packed = new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer());
+    if (packed.length < data.length) compressed[name] = packed;
+  }
+  return zipStore(files, compressed);
 }
 function readXML(bytes) {
   if (!bytes) throw new Error('The workbook is missing a required XML part.'); const source = decoder.decode(bytes);
@@ -1770,9 +1779,9 @@ class GridlineApp {
           let handle;
           try { handle = await window.showSaveFilePicker({suggestedName:name,types:[{description:'Excel workbook',accept:{[type]:['.xlsx']}}]}); }
           catch (error) { if (error.name === 'AbortError') return; throw error; }
-          const blob = new Blob([exportXLSX(workbook)],{type});
+          const blob = new Blob([await exportXLSX(workbook)],{type});
           await blob.stream().pipeTo(await handle.createWritable());
-        } else downloadFile(name,exportXLSX(workbook),type);
+        } else downloadFile(name,await exportXLSX(workbook),type);
         this.closeDialog(); this.toast('XLSX exported. Charts, notes, and conditional rules remain in the .gridline format.'); return;
       }
       case 'export-csv': downloadFile(this.sheet.name + '.csv', exportCSV(this.workbook), 'text/csv;charset=utf-8'); this.closeDialog(); this.toast('Current sheet exported as CSV values.'); return;
