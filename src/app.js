@@ -1,7 +1,7 @@
 import { formatHouseholdName, Workbook, MAX_ROWS, MAX_COLS, MAX_RANGE_CELLS, FUNCTIONS, FormulaError, address, parseAddress, parseRange, normalizedRange, rangeAddress, cellsIn, keyOf, shiftFormula, formatValue, colName, DATE_FORMATS, TIME_FORMATS, CURRENCIES, numberFormatStyle } from './engine.js';
 import { GridRenderer } from './renderer.js';
 import { createSampleWorkbook } from './sample.js';
-import { parseDelimited, serializeDelimited, exportCSV, workbookFromCSV, downloadFile, exportXLSX, importXLSX } from './io.js';
+import { exportGridline, importGridline, parseDelimited, serializeDelimited, exportCSV, workbookFromCSV, downloadFile, exportXLSX, importXLSX } from './io.js';
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const escapeHTML = s => String(s ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
@@ -232,6 +232,7 @@ class GridlineApp {
   }
   startEdit(initial) {
     if (!this.editable()) return;
+    this.editingExisting = initial === undefined;
     this.editing = true; this.barEditing = false; this.editor.hidden = false; this.editor.value = initial === undefined ? this.workbook.editValue(this.sheet, this.active.r, this.active.c) : initial; this.formulaInput.value = this.editor.value;
     const style = this.sheet.style(this.active.r, this.active.c); this.editor.style.fontFamily = style.fontFamily || 'Aptos, "Segoe UI", Arial, sans-serif'; this.editor.style.fontSize = (style.fontSize || 13) * this.renderer.zoom + 'px'; this.editor.style.fontWeight = style.bold ? '600' : '400';
     this.positionEditor(); this.editor.focus(); this.editor.setSelectionRange(this.editor.value.length, this.editor.value.length); $('#mode-status').textContent = 'Edit';
@@ -266,7 +267,7 @@ class GridlineApp {
     if (e.key === 'Escape') { $('#context-menu').hidden = true; if (this.dialog.open) { this.closeDialog(); return; } this.cancelEdit(); this.renderer.copyRange = null; this.renderer.requestFrame(); return; }
     if (this.dialog.open) return;
     if (mod && ['s','o','p','k'].includes(key)) { e.preventDefault(); this.errorBoundary(() => this.run({ s:'save', o:'open', p:'print', k:'commands' }[key])); return; }
-    if (this.editing && !mod && !e.shiftKey && !e.altKey && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) { e.preventDefault(); this.commitEdit(false); this.host.focus(); }
+    if (this.editing && !this.editingExisting && !mod && !e.shiftKey && !e.altKey && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) { e.preventDefault(); this.commitEdit(false); this.host.focus(); }
     if (this.editing || this.barEditing) {
       if (e.key === 'Enter' && !e.altKey) { e.preventDefault(); if (this.editing) this.commitEdit(false); else this.commitFormula(); this.host.focus(); this.goto(this.active.r + (e.shiftKey ? -1 : 1), this.active.c); }
       else if (e.key === 'Tab') { e.preventDefault(); if (this.editing) this.commitEdit(false); else this.commitFormula(); this.host.focus(); this.goto(this.active.r, this.active.c + (e.shiftKey ? -1 : 1)); }
@@ -428,7 +429,7 @@ class GridlineApp {
       case 'new': return this.confirm('Create a new workbook?', 'Export your current workbook first to keep a separate copy. The new workbook will replace the local autosave.', () => this.setWorkbook(new Workbook()), 'Create workbook');
       case 'sample': return this.confirm('Load the demo workbook?', 'This replaces the current local workbook with the illustrative revenue workbook.', () => { this.setWorkbook(createSampleWorkbook()); this.goto(12, 6); }, 'Load demo');
       case 'open': this.closeDialog(); $('#file-input').click(); return;
-      case 'save': this.persist(); downloadFile(this.fileName('.gridline'), JSON.stringify(this.workbook.toJSON(), null, 2), 'application/json'); this.toast('Gridline workbook exported with all app features.'); return;
+      case 'save': this.persist(); downloadFile(this.fileName('.gridline'), await exportGridline(this.workbook), 'application/octet-stream'); this.toast('Gridline workbook exported with all app features.'); return;
       case 'export-xlsx': {
         const name = this.fileName('.xlsx'), workbook = this.workbook, type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
         if (typeof window.showSaveFilePicker === 'function') {
@@ -540,7 +541,7 @@ class GridlineApp {
     if (file.size > 32 * 1024 * 1024) throw new Error('Files must be 32 MB or smaller.'); this.toast('Opening ' + file.name + '…');
     const title = file.name.replace(/\.[^.]+$/, ''); let workbook, warnings;
     if (/\.xlsx$/i.test(file.name)) { const result = await importXLSX(await file.arrayBuffer(), title); workbook = result.workbook; warnings = result.warnings; }
-    else if (/\.(gridline|json)$/i.test(file.name)) workbook = Workbook.fromJSON(JSON.parse(await file.text()));
+    else if (/\.(gridline|json)$/i.test(file.name)) workbook = await importGridline(file);
     else workbook = workbookFromCSV(await file.text(), title);
     this.setWorkbook(workbook); this.toast(warnings?.[0] || `Opened ${file.name}.`);
   }

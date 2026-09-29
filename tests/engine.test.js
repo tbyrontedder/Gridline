@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { duplicateValues, formatHouseholdName, Workbook, Sheet, FormulaError, FUNCTIONS, FormulaParser, address, parseAddress, parseRange, rangeAddress, shiftFormula, cellsIn, formatValue, dateSerial, serialDate, MAX_ROWS, MAX_COLS, keyOf } from '../src/engine.js';
 import { createSampleWorkbook } from '../src/sample.js';
-import { parseDelimited, serializeDelimited, workbookFromCSV, exportCSV, zipStore, unzip, exportXLSX } from '../src/io.js';
+import { exportGridline, importGridline, parseDelimited, serializeDelimited, workbookFromCSV, exportCSV, zipStore, unzip, exportXLSX } from '../src/io.js';
 import { AxisLayout } from '../src/renderer.js';
 const make = () => new Workbook();
 function evaluate(formula, cells={}) {
@@ -117,12 +117,13 @@ test('format changes reset old options, text preserves leading zeros, and fill c
   const restored = Workbook.fromJSON(JSON.parse(JSON.stringify(wb.toJSON()))); assert.equal(restored.display(restored.activeSheet,0,0),'42');
   wb.applyStyle(s,parseRange('C1'),{format:'text'}); wb.setRaw(s,0,2,'00123'); assert.equal(wb.value(s,0,2),'00123');
 });
-test('XLSX includes sparse row and column formats, even with no stored cells', async () => {
+test('XLSX omits trailing column formats without deleting native formatting', async () => {
   const wb = make(), s = wb.activeSheet;
   wb.applyStyle(s,{r1:0,r2:MAX_ROWS-1,c1:1,c2:1},{format:'date',pattern:'yyyy-mm-dd'});
   wb.applyStyle(s,{r1:3,r2:3,c1:0,c2:MAX_COLS-1},{format:'currency',currency:'GBP',decimals:2});
   const parts = await unzip(await exportXLSX(wb)), decode = name => new TextDecoder().decode(parts.get(name));
-  assert.match(decode('xl/worksheets/sheet1.xml'), /<col min="2" max="2" style="\d+"\/>/);
+  assert.ok(!decode('xl/worksheets/sheet1.xml').includes('<col min="2"'));
+  assert.equal(s.colStyles.get(1).format,'date');
   assert.match(decode('xl/worksheets/sheet1.xml'), /<row r="4" s="\d+" customFormat="1">/);
   assert.match(decode('xl/styles.xml'), /yyyy-mm-dd/); assert.match(decode('xl/styles.xml'), /£/);
   assert.equal(s.cells.size,0);
@@ -266,4 +267,27 @@ test('tab colors and No Color survive saved snapshots and appear correctly in XL
   const parts=await unzip(await exportXLSX(restored)), decoder=new TextDecoder();
   assert.ok(decoder.decode(parts.get('xl/worksheets/sheet1.xml')).includes('<sheetPr><tabColor rgb="FF123ABC"/></sheetPr>'));
   assert.ok(!decoder.decode(parts.get('xl/worksheets/sheet2.xml')).includes('tabColor'));
+});
+
+test('XLSX omits trailing column metadata that expands PHP import arrays',async()=>{
+  const w=make(),s=w.activeSheet;w.setRaw(s,0,0,'Name');w.setRaw(s,1,1,'Value');
+  for(let c=0;c<MAX_COLS;c++){s.colWidths.set(c,120);s.colStyles.set(c,{format:'text'});}
+  const parts=await unzip(await exportXLSX(w)),xml=new TextDecoder().decode(parts.get('xl/worksheets/sheet1.xml'));
+  assert.equal((xml.match(/<col /g)||[]).length,2);
+  assert.ok(xml.includes('min="2" max="2"'));assert.ok(!xml.includes('min="3"'));
+  assert.equal(s.colWidths.size,MAX_COLS);
+});
+
+test('native compressed and legacy exports restore all workbook data',async t=>{
+  const w=createSampleWorkbook();w.activeSheet.color=null;
+  const original=w.toJSON(), blob=await exportGridline(w);
+  assert.ok(blob.size<JSON.stringify(original).length/2);
+  assert.deepEqual((await importGridline(blob)).toJSON(),original);
+  assert.deepEqual((await importGridline(new Blob([JSON.stringify(original,null,2)]))).toJSON(),original);
+  t.mock.property(globalThis,'CompressionStream',undefined);
+  assert.deepEqual((await importGridline(await exportGridline(w))).toJSON(),original);
+});
+test('native import rejects damaged compressed files',async()=>{
+  const blob=await exportGridline(make());
+  await assert.rejects(importGridline(blob.slice(0,blob.size-4)));
 });

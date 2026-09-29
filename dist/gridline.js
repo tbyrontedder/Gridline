@@ -1256,7 +1256,7 @@ async function exportXLSX(workbook) {
   files['xl/_rels/workbook.xml.rels'] = xmlHeader + `<Relationships xmlns="${packageRelNS}">${workbook.sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="${relationshipNS}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${workbook.sheets.length + 1}" Type="${relationshipNS}/styles" Target="styles.xml"/></Relationships>`;
   files['xl/styles.xml'] = styles.xml;
   workbook.sheets.forEach((sheet, i) => {
-    const rows = new Map();
+    const rows = new Map(), lastColumn = Math.max(sheet.usedRange().c2, ...sheet.merges.map(q => q.c2));
     for (const [key, cell] of sheet.cells) {
       const [r, c] = key.split(',').map(Number); if (!rows.has(r)) rows.set(r, []);
       const ref = address(r, c), sid = styles.idFor(sheet.style(r, c)), val = workbook.value(sheet, r, c), formula = cell.raw.startsWith('=') ? `<f>${escapeXML(cell.raw.slice(1))}</f>` : '';
@@ -1271,7 +1271,7 @@ async function exportXLSX(workbook) {
     for (const r of new Set([...sheet.rowHeights.keys(), ...sheet.rowStyles.keys()])) if (!rows.has(r)) rows.set(r, []);
     const rowXML = [...rows].sort(([a], [b]) => a - b).map(([r, cells]) => `<row r="${r + 1}"${sheet.rowStyles.has(r) ? ` s="${styles.idFor(sheet.rowStyles.get(r))}" customFormat="1"` : ''}${sheet.rowHeights.has(r) ? ` ht="${sheet.rowHeights.get(r) * 0.75}" customHeight="1"` : ''}${sheet.hiddenRows.has(r) ? ' hidden="1"' : ''}>${cells.sort((a, b) => a.c - b.c).map(c => c.xml).join('')}</row>`).join('');
     const pane = sheet.freezeRows || sheet.freezeCols ? `<pane xSplit="${sheet.freezeCols}" ySplit="${sheet.freezeRows}" topLeftCell="${address(sheet.freezeRows, sheet.freezeCols)}" activePane="${sheet.freezeRows && sheet.freezeCols ? 'bottomRight' : sheet.freezeRows ? 'bottomLeft' : 'topRight'}" state="frozen"/>` : '';
-    files[`xl/worksheets/sheet${i + 1}.xml`] = xmlHeader + `<worksheet xmlns="${spreadsheetNS}">${/^#[0-9a-f]{6}$/i.test(sheet.color) ? `<sheetPr><tabColor rgb="${colorARGB(sheet.color)}"/></sheetPr>` : ''}<dimension ref="A1:${address(sheet.usedRange().r2, sheet.usedRange().c2)}"/><sheetViews><sheetView workbookViewId="0" showGridLines="${sheet.gridlines ? 1 : 0}">${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="20.25"/>${sheet.colWidths.size || sheet.colStyles.size || sheet.hiddenCols.size ? '<cols>' + [...new Set([...sheet.colWidths.keys(), ...sheet.colStyles.keys(), ...sheet.hiddenCols])].sort((a,b) => a-b).map(c => `<col min="${c + 1}" max="${c + 1}"${sheet.colWidths.has(c) ? ` width="${Math.max(1, (sheet.colWidths.get(c) - 5) / 7)}" customWidth="1"` : ''}${sheet.hiddenCols.has(c) ? ' hidden="1"' : ''}${sheet.colStyles.has(c) ? ` style="${styles.idFor(sheet.colStyles.get(c))}"` : ''}/>`).join('') + '</cols>' : ''}<sheetData>${rowXML}</sheetData>${sheet.filters ? `<autoFilter ref="${address(sheet.filters.range.r1, sheet.filters.range.c1)}:${address(sheet.filters.range.r2, sheet.filters.range.c2)}"/>` : ''}${sheet.merges.length ? `<mergeCells count="${sheet.merges.length}">${sheet.merges.map(m => `<mergeCell ref="${address(m.r1, m.c1)}:${address(m.r2, m.c2)}"/>`).join('')}</mergeCells>` : ''}<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`;
+    files[`xl/worksheets/sheet${i + 1}.xml`] = xmlHeader + `<worksheet xmlns="${spreadsheetNS}">${/^#[0-9a-f]{6}$/i.test(sheet.color) ? `<sheetPr><tabColor rgb="${colorARGB(sheet.color)}"/></sheetPr>` : ''}<dimension ref="A1:${address(sheet.usedRange().r2, sheet.usedRange().c2)}"/><sheetViews><sheetView workbookViewId="0" showGridLines="${sheet.gridlines ? 1 : 0}">${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="20.25"/>${sheet.colWidths.size || sheet.colStyles.size || sheet.hiddenCols.size ? '<cols>' + [...new Set([...sheet.colWidths.keys(), ...sheet.colStyles.keys(), ...sheet.hiddenCols])].filter(c => c <= lastColumn).sort((a,b) => a-b).map(c => `<col min="${c + 1}" max="${c + 1}"${sheet.colWidths.has(c) ? ` width="${Math.max(1, (sheet.colWidths.get(c) - 5) / 7)}" customWidth="1"` : ''}${sheet.hiddenCols.has(c) ? ' hidden="1"' : ''}${sheet.colStyles.has(c) ? ` style="${styles.idFor(sheet.colStyles.get(c))}"` : ''}/>`).join('') + '</cols>' : ''}<sheetData>${rowXML}</sheetData>${sheet.filters ? `<autoFilter ref="${address(sheet.filters.range.r1, sheet.filters.range.c1)}:${address(sheet.filters.range.r2, sheet.filters.range.c2)}"/>` : ''}${sheet.merges.length ? `<mergeCells count="${sheet.merges.length}">${sheet.merges.map(m => `<mergeCell ref="${address(m.r1, m.c1)}:${address(m.r2, m.c2)}"/>`).join('')}</mergeCells>` : ''}<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`;
   });
   const compressed = {};
   // Native raw DEFLATE is ZIP method 8. Older browsers retain the valid stored ZIP path.
@@ -1354,7 +1354,29 @@ async function importXLSX(buffer, title = 'Imported workbook') {
   return { workbook: wb, warnings };
 }
 
-return { parseDelimited, serializeDelimited, exportCSV, workbookFromCSV, downloadFile, zipStore, unzip, exportXLSX, importXLSX };
+async function exportGridline(workbook) {
+  const blob = new Blob([JSON.stringify(workbook.toJSON())], {type:'application/json'});
+  if (typeof CompressionStream === 'undefined') return blob;
+  return new Response(blob.stream().pipeThrough(new CompressionStream('gzip'))).blob();
+}
+async function importGridline(file) {
+  const header = new Uint8Array(await file.slice(0,2).arrayBuffer());
+  let stream = file.stream();
+  if (header[0] === 0x1f && header[1] === 0x8b) {
+    if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot open compressed Gridline files. Please use an updated browser.');
+    stream = stream.pipeThrough(new DecompressionStream('gzip'));
+  }
+  const reader = stream.getReader(), chunks = []; let size = 0;
+  while (true) {
+    const {done,value} = await reader.read(); if (done) break;
+    size += value.length;
+    if (size > 64 * 1024 * 1024) { await reader.cancel(); throw new Error('Expanded Gridline file exceeds the 64 MB limit.'); }
+    chunks.push(value);
+  }
+  return Workbook.fromJSON(JSON.parse(await new Blob(chunks).text()));
+}
+
+return { parseDelimited, serializeDelimited, exportCSV, workbookFromCSV, downloadFile, zipStore, unzip, exportXLSX, importXLSX, exportGridline, importGridline };
 })();
 
 // ===== app.js =====
@@ -1362,7 +1384,7 @@ __modules["app"] = (() => {
 const { formatHouseholdName, Workbook, MAX_ROWS, MAX_COLS, MAX_RANGE_CELLS, FUNCTIONS, FormulaError, address, parseAddress, parseRange, normalizedRange, rangeAddress, cellsIn, keyOf, shiftFormula, formatValue, colName, DATE_FORMATS, TIME_FORMATS, CURRENCIES, numberFormatStyle } = __modules["engine"];
 const { GridRenderer } = __modules["renderer"];
 const { createSampleWorkbook } = __modules["sample"];
-const { parseDelimited, serializeDelimited, exportCSV, workbookFromCSV, downloadFile, exportXLSX, importXLSX } = __modules["io"];
+const { exportGridline, importGridline, parseDelimited, serializeDelimited, exportCSV, workbookFromCSV, downloadFile, exportXLSX, importXLSX } = __modules["io"];
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const escapeHTML = s => String(s ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
@@ -1593,6 +1615,7 @@ class GridlineApp {
   }
   startEdit(initial) {
     if (!this.editable()) return;
+    this.editingExisting = initial === undefined;
     this.editing = true; this.barEditing = false; this.editor.hidden = false; this.editor.value = initial === undefined ? this.workbook.editValue(this.sheet, this.active.r, this.active.c) : initial; this.formulaInput.value = this.editor.value;
     const style = this.sheet.style(this.active.r, this.active.c); this.editor.style.fontFamily = style.fontFamily || 'Aptos, "Segoe UI", Arial, sans-serif'; this.editor.style.fontSize = (style.fontSize || 13) * this.renderer.zoom + 'px'; this.editor.style.fontWeight = style.bold ? '600' : '400';
     this.positionEditor(); this.editor.focus(); this.editor.setSelectionRange(this.editor.value.length, this.editor.value.length); $('#mode-status').textContent = 'Edit';
@@ -1627,7 +1650,7 @@ class GridlineApp {
     if (e.key === 'Escape') { $('#context-menu').hidden = true; if (this.dialog.open) { this.closeDialog(); return; } this.cancelEdit(); this.renderer.copyRange = null; this.renderer.requestFrame(); return; }
     if (this.dialog.open) return;
     if (mod && ['s','o','p','k'].includes(key)) { e.preventDefault(); this.errorBoundary(() => this.run({ s:'save', o:'open', p:'print', k:'commands' }[key])); return; }
-    if (this.editing && !mod && !e.shiftKey && !e.altKey && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) { e.preventDefault(); this.commitEdit(false); this.host.focus(); }
+    if (this.editing && !this.editingExisting && !mod && !e.shiftKey && !e.altKey && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) { e.preventDefault(); this.commitEdit(false); this.host.focus(); }
     if (this.editing || this.barEditing) {
       if (e.key === 'Enter' && !e.altKey) { e.preventDefault(); if (this.editing) this.commitEdit(false); else this.commitFormula(); this.host.focus(); this.goto(this.active.r + (e.shiftKey ? -1 : 1), this.active.c); }
       else if (e.key === 'Tab') { e.preventDefault(); if (this.editing) this.commitEdit(false); else this.commitFormula(); this.host.focus(); this.goto(this.active.r, this.active.c + (e.shiftKey ? -1 : 1)); }
@@ -1789,7 +1812,7 @@ class GridlineApp {
       case 'new': return this.confirm('Create a new workbook?', 'Export your current workbook first to keep a separate copy. The new workbook will replace the local autosave.', () => this.setWorkbook(new Workbook()), 'Create workbook');
       case 'sample': return this.confirm('Load the demo workbook?', 'This replaces the current local workbook with the illustrative revenue workbook.', () => { this.setWorkbook(createSampleWorkbook()); this.goto(12, 6); }, 'Load demo');
       case 'open': this.closeDialog(); $('#file-input').click(); return;
-      case 'save': this.persist(); downloadFile(this.fileName('.gridline'), JSON.stringify(this.workbook.toJSON(), null, 2), 'application/json'); this.toast('Gridline workbook exported with all app features.'); return;
+      case 'save': this.persist(); downloadFile(this.fileName('.gridline'), await exportGridline(this.workbook), 'application/octet-stream'); this.toast('Gridline workbook exported with all app features.'); return;
       case 'export-xlsx': {
         const name = this.fileName('.xlsx'), workbook = this.workbook, type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
         if (typeof window.showSaveFilePicker === 'function') {
@@ -1901,7 +1924,7 @@ class GridlineApp {
     if (file.size > 32 * 1024 * 1024) throw new Error('Files must be 32 MB or smaller.'); this.toast('Opening ' + file.name + '…');
     const title = file.name.replace(/\.[^.]+$/, ''); let workbook, warnings;
     if (/\.xlsx$/i.test(file.name)) { const result = await importXLSX(await file.arrayBuffer(), title); workbook = result.workbook; warnings = result.warnings; }
-    else if (/\.(gridline|json)$/i.test(file.name)) workbook = Workbook.fromJSON(JSON.parse(await file.text()));
+    else if (/\.(gridline|json)$/i.test(file.name)) workbook = await importGridline(file);
     else workbook = workbookFromCSV(await file.text(), title);
     this.setWorkbook(workbook); this.toast(warnings?.[0] || `Opened ${file.name}.`);
   }

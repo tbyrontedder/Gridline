@@ -118,7 +118,7 @@ export async function exportXLSX(workbook) {
   files['xl/_rels/workbook.xml.rels'] = xmlHeader + `<Relationships xmlns="${packageRelNS}">${workbook.sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="${relationshipNS}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${workbook.sheets.length + 1}" Type="${relationshipNS}/styles" Target="styles.xml"/></Relationships>`;
   files['xl/styles.xml'] = styles.xml;
   workbook.sheets.forEach((sheet, i) => {
-    const rows = new Map();
+    const rows = new Map(), lastColumn = Math.max(sheet.usedRange().c2, ...sheet.merges.map(q => q.c2));
     for (const [key, cell] of sheet.cells) {
       const [r, c] = key.split(',').map(Number); if (!rows.has(r)) rows.set(r, []);
       const ref = address(r, c), sid = styles.idFor(sheet.style(r, c)), val = workbook.value(sheet, r, c), formula = cell.raw.startsWith('=') ? `<f>${escapeXML(cell.raw.slice(1))}</f>` : '';
@@ -133,7 +133,7 @@ export async function exportXLSX(workbook) {
     for (const r of new Set([...sheet.rowHeights.keys(), ...sheet.rowStyles.keys()])) if (!rows.has(r)) rows.set(r, []);
     const rowXML = [...rows].sort(([a], [b]) => a - b).map(([r, cells]) => `<row r="${r + 1}"${sheet.rowStyles.has(r) ? ` s="${styles.idFor(sheet.rowStyles.get(r))}" customFormat="1"` : ''}${sheet.rowHeights.has(r) ? ` ht="${sheet.rowHeights.get(r) * 0.75}" customHeight="1"` : ''}${sheet.hiddenRows.has(r) ? ' hidden="1"' : ''}>${cells.sort((a, b) => a.c - b.c).map(c => c.xml).join('')}</row>`).join('');
     const pane = sheet.freezeRows || sheet.freezeCols ? `<pane xSplit="${sheet.freezeCols}" ySplit="${sheet.freezeRows}" topLeftCell="${address(sheet.freezeRows, sheet.freezeCols)}" activePane="${sheet.freezeRows && sheet.freezeCols ? 'bottomRight' : sheet.freezeRows ? 'bottomLeft' : 'topRight'}" state="frozen"/>` : '';
-    files[`xl/worksheets/sheet${i + 1}.xml`] = xmlHeader + `<worksheet xmlns="${spreadsheetNS}">${/^#[0-9a-f]{6}$/i.test(sheet.color) ? `<sheetPr><tabColor rgb="${colorARGB(sheet.color)}"/></sheetPr>` : ''}<dimension ref="A1:${address(sheet.usedRange().r2, sheet.usedRange().c2)}"/><sheetViews><sheetView workbookViewId="0" showGridLines="${sheet.gridlines ? 1 : 0}">${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="20.25"/>${sheet.colWidths.size || sheet.colStyles.size || sheet.hiddenCols.size ? '<cols>' + [...new Set([...sheet.colWidths.keys(), ...sheet.colStyles.keys(), ...sheet.hiddenCols])].sort((a,b) => a-b).map(c => `<col min="${c + 1}" max="${c + 1}"${sheet.colWidths.has(c) ? ` width="${Math.max(1, (sheet.colWidths.get(c) - 5) / 7)}" customWidth="1"` : ''}${sheet.hiddenCols.has(c) ? ' hidden="1"' : ''}${sheet.colStyles.has(c) ? ` style="${styles.idFor(sheet.colStyles.get(c))}"` : ''}/>`).join('') + '</cols>' : ''}<sheetData>${rowXML}</sheetData>${sheet.filters ? `<autoFilter ref="${address(sheet.filters.range.r1, sheet.filters.range.c1)}:${address(sheet.filters.range.r2, sheet.filters.range.c2)}"/>` : ''}${sheet.merges.length ? `<mergeCells count="${sheet.merges.length}">${sheet.merges.map(m => `<mergeCell ref="${address(m.r1, m.c1)}:${address(m.r2, m.c2)}"/>`).join('')}</mergeCells>` : ''}<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`;
+    files[`xl/worksheets/sheet${i + 1}.xml`] = xmlHeader + `<worksheet xmlns="${spreadsheetNS}">${/^#[0-9a-f]{6}$/i.test(sheet.color) ? `<sheetPr><tabColor rgb="${colorARGB(sheet.color)}"/></sheetPr>` : ''}<dimension ref="A1:${address(sheet.usedRange().r2, sheet.usedRange().c2)}"/><sheetViews><sheetView workbookViewId="0" showGridLines="${sheet.gridlines ? 1 : 0}">${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="20.25"/>${sheet.colWidths.size || sheet.colStyles.size || sheet.hiddenCols.size ? '<cols>' + [...new Set([...sheet.colWidths.keys(), ...sheet.colStyles.keys(), ...sheet.hiddenCols])].filter(c => c <= lastColumn).sort((a,b) => a-b).map(c => `<col min="${c + 1}" max="${c + 1}"${sheet.colWidths.has(c) ? ` width="${Math.max(1, (sheet.colWidths.get(c) - 5) / 7)}" customWidth="1"` : ''}${sheet.hiddenCols.has(c) ? ' hidden="1"' : ''}${sheet.colStyles.has(c) ? ` style="${styles.idFor(sheet.colStyles.get(c))}"` : ''}/>`).join('') + '</cols>' : ''}<sheetData>${rowXML}</sheetData>${sheet.filters ? `<autoFilter ref="${address(sheet.filters.range.r1, sheet.filters.range.c1)}:${address(sheet.filters.range.r2, sheet.filters.range.c2)}"/>` : ''}${sheet.merges.length ? `<mergeCells count="${sheet.merges.length}">${sheet.merges.map(m => `<mergeCell ref="${address(m.r1, m.c1)}:${address(m.r2, m.c2)}"/>`).join('')}</mergeCells>` : ''}<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`;
   });
   const compressed = {};
   // Native raw DEFLATE is ZIP method 8. Older browsers retain the valid stored ZIP path.
@@ -214,4 +214,26 @@ export async function importXLSX(buffer, title = 'Imported workbook') {
   for (const name of elements(workbookDoc, 'definedName')) { const key = name.getAttribute('name'); if (!key.startsWith('_xlnm.')) wb.names[key.toUpperCase()] = name.textContent; }
   const active = +firstElement(workbookDoc, 'workbookView')?.getAttribute('activeTab') || 0; wb.activeSheetId = (wb.sheets[active] || wb.sheets[0]).id;
   return { workbook: wb, warnings };
+}
+
+export async function exportGridline(workbook) {
+  const blob = new Blob([JSON.stringify(workbook.toJSON())], {type:'application/json'});
+  if (typeof CompressionStream === 'undefined') return blob;
+  return new Response(blob.stream().pipeThrough(new CompressionStream('gzip'))).blob();
+}
+export async function importGridline(file) {
+  const header = new Uint8Array(await file.slice(0,2).arrayBuffer());
+  let stream = file.stream();
+  if (header[0] === 0x1f && header[1] === 0x8b) {
+    if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot open compressed Gridline files. Please use an updated browser.');
+    stream = stream.pipeThrough(new DecompressionStream('gzip'));
+  }
+  const reader = stream.getReader(), chunks = []; let size = 0;
+  while (true) {
+    const {done,value} = await reader.read(); if (done) break;
+    size += value.length;
+    if (size > 64 * 1024 * 1024) { await reader.cancel(); throw new Error('Expanded Gridline file exceeds the 64 MB limit.'); }
+    chunks.push(value);
+  }
+  return Workbook.fromJSON(JSON.parse(await new Blob(chunks).text()));
 }
